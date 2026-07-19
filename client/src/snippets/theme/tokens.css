@@ -1,0 +1,75 @@
+/* ── Kick design tokens ─────────────────────────────────────────────
+   The single source of truth for colour. Components NEVER use hex —
+   they consume these variables. Copy this file (and the tokens.ts
+   companion) into any project to get the same look.
+   Usage: class="bg-[var(--bg-surface)] text-[var(--text-secondary)]" */
+
+:root {
+  --kick-green: #53fc18; /* accent, CTAs, live indicators — dark text on top only */
+  --kick-green-dim: #3fbf13; /* hover/pressed */
+  --bg-base: #0b0e0f; /* app background */
+  --bg-surface: #131718; /* cards, panels */
+  --bg-elevated: #1c2123; /* hover, inputs, chat rows */
+  --border: #262c2e;
+  --text-primary: #ffffff;
+  --text-secondary: #a3a8a6;
+  --text-muted: #6b7270;
+  --danger: #ff4d4d;
+  --warn: #ffb020;
+}
+
+/* ── Base ── */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  letter-spacing: -0.02em;
+}
+
+/* Metrics: tabular digits so numbers don't jitter as they update */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Slim scrollbars */
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* react-grid-layout theming (drag placeholder + resize handle) */
+.react-grid-item.react-grid-placeholder {
+  background: var(--kick-green) !important;
+  opacity: 0.08;
+  border-radius: 8px;
+}
+.react-grid-item > .react-resizable-handle::after {
+  border-color: var(--text-muted) !important;
+}

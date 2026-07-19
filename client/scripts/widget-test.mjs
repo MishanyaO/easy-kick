@@ -23,14 +23,15 @@ console.log('RESIZE WORKED:', before !== after, '\n before:', before, '\n after:
 
 // HIDE: hover hype widget, click eye-off
 const itemCount = async () => await page.locator('.react-grid-item').count();
+const initial = await itemCount();
 await page.locator('.react-grid-item').first().hover();
 await page.locator('.react-grid-item button[title="Hide widget"]').first().click();
 await page.waitForTimeout(400);
-console.log('HIDE WORKED:', (await itemCount()) === 3);
+console.log('HIDE WORKED:', (await itemCount()) === initial - 1);
 
 // SHOW AGAIN via menu
 await page.getByText('Widgets').click();
 await page.getByText('Hype score & trend').click();
 await page.waitForTimeout(400);
-console.log('SHOW WORKED:', (await itemCount()) === 4);
+console.log('SHOW WORKED:', (await itemCount()) === initial);
 await browser.close();

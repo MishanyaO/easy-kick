@@ -1,0 +1,24 @@
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# src/easy_kick/config.py -> parents[2] is the project root.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=PROJECT_ROOT / ".env", env_prefix="KICK_")
+
+    client_id: str = ""
+    client_secret: str = ""
+    redirect_uri: str = "http://localhost:8000/auth/callback"
+    public_base_url: str = "http://localhost:8000"
+    api_base: str = "https://api.kick.com/public/v1"
+    auth_base: str = "https://id.kick.com"
+    buffer_size: int = 10000
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

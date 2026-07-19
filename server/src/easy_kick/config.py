@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     api_base: str = "https://api.kick.com/public/v1"
     auth_base: str = "https://id.kick.com"
     buffer_size: int = 10000
+    simulator_enabled: bool = False
 
 
 @lru_cache

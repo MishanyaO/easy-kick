@@ -12,24 +12,35 @@ uv sync                # creates .venv and installs deps (incl. dev group) from 
 cp .env.example .env   # then fill in your Kick app credentials
 ```
 
+## ngrok setup
+
+Kick delivers webhooks over the public internet, so it needs a public HTTPS URL that
+tunnels to your local server. The Kick app (you create in the next step) must point at
+this URL, so get it **before** creating the app.
+
+[ngrok](https://ngrok.com) is the easiest option:
+
+```bash
+brew install ngrok                 # or download from https://ngrok.com/download
+ngrok config add-authtoken <token> # one-time; grab the token from the ngrok dashboard (free signup)
+ngrok http 8000                    # start the tunnel
+```
+
+ngrok prints a forwarding URL like `https://<random>.ngrok-free.dev`. That is your
+**`<public url>`** for every step below. (Any HTTPS tunnel works — `cloudflared`, etc.)
+
+> **Important:** on ngrok's free tier the URL changes every time you restart it. When it
+> rotates you must update the Kick app config *and* `.env` (below) to match, then restart
+> the server.
+
 ## Creating a Kick app
 
 1. Sign in at [kick.com](https://kick.com) (2FA must be enabled).
 2. Go to **Settings → Developer → Create App**.
 3. Set the **redirect URI** to `<public url>/auth/callback` and the **webhook URL** to
-   `<public url>/webhook` (see next section for the public URL).
-4. Copy the Client ID and Client Secret into `.env`.
-
-## Exposing localhost
-
-Kick needs a public HTTPS URL to deliver webhooks. For local development:
-
-```bash
-ngrok http 8000
-```
-
-Use the resulting `https://…` URL as `<public url>` in the Kick app settings and in
-`KICK_REDIRECT_URI` / `KICK_PUBLIC_BASE_URL` in `.env` (or use `cloudflared`, etc.).
+   `<public url>/webhook`, using the ngrok URL from the previous step.
+4. Copy the Client ID and Client Secret into `.env`, and set `KICK_REDIRECT_URI` /
+   `KICK_PUBLIC_BASE_URL` to `<public url>/auth/callback` and `<public url>`.
 
 ## Running
 

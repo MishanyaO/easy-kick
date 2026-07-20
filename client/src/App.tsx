@@ -3,6 +3,7 @@ import ChatPanel from './components/ChatPanel';
 import CenterPanel, { type HypePoint } from './components/CenterPanel';
 import ActionFeed from './components/ActionFeed';
 import { startMockStream } from './mockStream';
+import { startChatStream } from './chatStream';
 import type { ChatEvent, InsightEvent, ActionEvent, ActionResult } from './types';
 
 const MAX_MSGS = 80;
@@ -18,11 +19,17 @@ export default function App() {
   const startRef = useRef(Date.now());
 
   useEffect(() => {
-    const stop = startMockStream((e) => {
+    // Chat is real, from the Kick webhook backend.
+    const stopChat = startChatStream((e) => {
       setStarted(true);
-      if (e.type === 'chat') {
-        setMessages((m) => [...m.slice(-MAX_MSGS + 1), e]);
-      } else if (e.type === 'insight') {
+      setMessages((m) => [...m.slice(-MAX_MSGS + 1), e]);
+    });
+
+    // Insights, actions and results are still mocked — the backend does no analysis yet.
+    const stopMock = startMockStream((e) => {
+      if (e.type === 'chat') return; // superseded by the live stream above
+      setStarted(true);
+      if (e.type === 'insight') {
         setInsight(e);
         setHistory((h) => {
           const t = Math.round((Date.now() - startRef.current) / 1000);
@@ -42,7 +49,10 @@ export default function App() {
         );
       }
     });
-    return stop;
+    return () => {
+      stopChat();
+      stopMock();
+    };
   }, []);
 
   const closeWithResult = (action: ActionEvent) => {

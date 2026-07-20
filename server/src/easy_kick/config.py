@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     auth_base: str = "https://id.kick.com"
     buffer_size: int = 10000
     simulator_enabled: bool = False
+    # Browser origins allowed to call the read API (the Vite dev server by default).
+    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 
 @lru_cache

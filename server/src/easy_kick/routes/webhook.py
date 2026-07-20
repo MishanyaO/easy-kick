@@ -93,6 +93,7 @@ async def receive_webhook(request: Request):
     added = app.state.store.add(event)
     if added:
         logger.info("event=%s id=%s%s", event_type, message_id, _summary(event))
+        app.state.hub.publish(event)  # duplicates are never re-broadcast
     return {"status": "ok", "duplicate": not added}
 
 

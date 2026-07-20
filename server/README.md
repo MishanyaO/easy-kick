@@ -58,6 +58,29 @@ Chat events require the broadcaster to grant your app the `events:subscribe` sco
 
 Chat messages will now stream into the app — watch stdout or query the read API.
 
+## Simulator (no Kick account needed)
+
+Replay a canned dataset instead of waiting for real chat. Off by default — enable with
+`KICK_SIMULATOR_ENABLED=true` in `.env` (or use `npm run dev:simulator` from the repo
+root, which sets it for you), which mounts the `/dev` routes:
+
+```bash
+curl http://localhost:8000/dev/replay                               # status
+curl -X POST 'http://localhost:8000/dev/replay?speed=5&loop=true'   # start
+curl -X DELETE http://localhost:8000/dev/replay                     # stop
+```
+
+All three return the same shape, so a UI can poll one endpoint:
+
+```json
+{"status": "running", "speed": 5.0, "loop": true, "total": 60, "sent": 28,
+ "dataset": "sample_stream.jsonl"}
+```
+
+Replayed events go through the same store-and-publish path as real webhooks, so they
+appear on `/stream` and `/messages` identically. The dataset is
+[`data/sample_stream.jsonl`](data/sample_stream.jsonl) — 60 events, ~63s at `speed=1`.
+
 ## Endpoints
 
 | Method | Path | Purpose |
@@ -71,7 +94,11 @@ Chat messages will now stream into the app — watch stdout or query the read AP
 | DELETE | `/subscriptions?id=…` | Delete subscriptions by id |
 | GET | `/messages?sender=&limit=` | Recent chat messages, newest first |
 | GET | `/events?type=&limit=` | Recent events of any type, newest first |
+| GET | `/stream?backlog=` | Live chat as Server-Sent Events (backlog replayed first) |
 | GET | `/health` | Liveness + buffer stats |
+| GET | `/dev/replay` | Replay status + progress (simulator only) |
+| POST | `/dev/replay?speed=&loop=` | Start dataset replay (simulator only) |
+| DELETE | `/dev/replay` | Stop the replay (simulator only) |
 
 ## Tests
 

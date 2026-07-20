@@ -1,7 +1,5 @@
 import type { ChatEvent } from './types';
-
-// Override with VITE_API_URL when the backend is not on localhost (e.g. an ngrok URL).
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+import { API_BASE } from './api';
 
 /**
  * Subscribes to real Kick chat from the easy-kick backend over SSE.

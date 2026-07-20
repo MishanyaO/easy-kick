@@ -1,0 +1,18 @@
+{
+  "name": "kick-insights",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,magenta \"npm:_server\" \"npm:_client\"",
+    "dev:simulator": "concurrently -n server,client -c yellow,magenta \"npm:_server:sim\" \"npm:_client:sim\"",
+    "_server": "cd server && uv run uvicorn easy_kick.main:app --port 8000 --reload",
+    "_server:sim": "cd server && KICK_SIMULATOR_ENABLED=true uv run uvicorn easy_kick.main:app --port 8000 --reload",
+    "_client": "cd client && npm run dev",
+    "_client:sim": "cd client && npm run dev -- --mode simulator",
+    "build": "cd client && npm run build",
+    "test": "cd server && uv run pytest -q"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

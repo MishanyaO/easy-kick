@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import ChatPanel from './components/ChatPanel';
 import CenterPanel, { type HypePoint } from './components/CenterPanel';
 import ActionFeed from './components/ActionFeed';
+import SimulatorPanel from './components/SimulatorPanel';
+import { SIMULATOR_UI } from './api';
 import { startMockStream } from './mockStream';
 import { startChatStream } from './chatStream';
 import type { ChatEvent, InsightEvent, ActionEvent, ActionResult } from './types';
@@ -19,7 +21,7 @@ export default function App() {
   const startRef = useRef(Date.now());
 
   useEffect(() => {
-    // Chat is real, from the Kick webhook backend.
+    // Real chat from the backend — live Kick webhooks or the replay simulator.
     const stopChat = startChatStream((e) => {
       setStarted(true);
       setMessages((m) => [...m.slice(-MAX_MSGS + 1), e]);
@@ -86,7 +88,13 @@ export default function App() {
   };
 
   return (
-    <div className="grid h-screen grid-cols-[1fr_2fr_1fr] gap-3 overflow-hidden bg-[var(--bg-base)] p-3">
+    <div className="flex h-screen flex-col overflow-hidden bg-[var(--bg-base)] p-3">
+      {SIMULATOR_UI && (
+        <div className="mb-3 shrink-0">
+          <SimulatorPanel />
+        </div>
+      )}
+      <div className="grid min-h-0 flex-1 grid-cols-[1fr_2fr_1fr] gap-3">
       <div className="min-h-0">
         <ActionFeed
           actions={Object.values(actions)}
@@ -100,6 +108,7 @@ export default function App() {
       </div>
       <div className="min-h-0">
         <ChatPanel messages={messages} spike={insight?.spike ?? false} />
+      </div>
       </div>
     </div>
   );

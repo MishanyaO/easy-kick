@@ -4,6 +4,7 @@ import asyncio
 import logging
 import uuid
 from contextlib import suppress
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
@@ -12,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ..config import PROJECT_ROOT
+from ..hub import EventHub
 from ..models import EventEnvelope
 from ..store import EventStore
 
@@ -26,6 +28,31 @@ EventType = Literal[
     "channel.subscription.renewal",
     "kicks.gifted",
 ]
+
+
+@dataclass
+class ReplayState:
+    """The single in-flight replay, plus enough detail for a UI to render progress."""
+
+    task: asyncio.Task[None] | None = field(default=None, repr=False)
+    speed: float = 1.0
+    loop: bool = False
+    total: int = 0
+    sent: int = 0
+
+    @property
+    def running(self) -> bool:
+        return self.task is not None and not self.task.done()
+
+    def status(self) -> dict[str, object]:
+        return {
+            "status": "running" if self.running else "idle",
+            "speed": self.speed,
+            "loop": self.loop,
+            "total": self.total,
+            "sent": self.sent,
+            "dataset": DATASET.name,
+        }
 
 
 class DatasetRow(BaseModel):
@@ -131,14 +158,19 @@ def _build_event(row: DatasetRow) -> EventEnvelope:
     )
 
 
-async def _run(store: EventStore, rows: list[DatasetRow], speed: float, loop: bool) -> None:
+async def _run(store: EventStore, hub: EventHub, rows: list[DatasetRow],
+               state: ReplayState) -> None:
     while True:
         for row in rows:
-            await asyncio.sleep(row.delay_ms / 1000 / speed)
+            await asyncio.sleep(row.delay_ms / 1000 / state.speed)
             event = _build_event(row)
-            store.add(event)
+            # Same store-then-publish order as the webhook route, so replayed events
+            # reach live SSE subscribers instead of only landing in the buffer.
+            if store.add(event):
+                hub.publish(event)
+            state.sent += 1
             logger.info("event=%s user=%s content=%s", event.type, row.user, row.content or "")
-        if not loop:
+        if not state.loop:
             return
 
 
@@ -160,9 +192,9 @@ async def start_replay(
     loop: bool = False,
 ) -> dict[str, object]:
     """Start replaying the sample dataset in the background."""
-    replay_task: asyncio.Task[None] | None = request.app.state.replay_task
+    state: ReplayState = request.app.state.replay
 
-    if replay_task and not replay_task.done():
+    if state.running:
         raise HTTPException(status_code=409, detail="a replay is already running")
     if not DATASET.exists():
         raise HTTPException(status_code=404, detail=f"dataset not found: {DATASET}")
@@ -172,20 +204,28 @@ async def start_replay(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    replay_task = asyncio.create_task(_run(request.app.state.store, rows, speed, loop))
-    replay_task.add_done_callback(_replay_finished)
-    request.app.state.replay_task = replay_task
+    state.speed, state.loop, state.total, state.sent = speed, loop, len(rows), 0
+    state.task = asyncio.create_task(
+        _run(request.app.state.store, request.app.state.hub, rows, state))
+    state.task.add_done_callback(_replay_finished)
     logger.info("replay started: events=%d speed=%s loop=%s", len(rows), speed, loop)
-    return {"status": "replaying", "events": len(rows), "speed": speed, "loop": loop}
+    return state.status()
+
+
+@router.get("/replay")
+async def replay_status(request: Request) -> dict[str, object]:
+    """Current replay state — what a control panel polls."""
+    return request.app.state.replay.status()
 
 
 @router.delete("/replay")
-async def stop_replay(request: Request) -> dict[str, str]:
-    replay_task: asyncio.Task[None] | None = request.app.state.replay_task
+async def stop_replay(request: Request) -> dict[str, object]:
+    state: ReplayState = request.app.state.replay
 
-    if not replay_task or replay_task.done():
-        return {"status": "idle"}
-    replay_task.cancel()
+    if not state.running:
+        return state.status()
+    state.task.cancel()
     with suppress(asyncio.CancelledError):
-        await replay_task
-    return {"status": "stopped"}
+        await state.task
+    # "stopped" rather than "idle": the caller cancelled a running replay.
+    return {**state.status(), "status": "stopped"}

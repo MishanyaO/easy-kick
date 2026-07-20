@@ -4,12 +4,17 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 
-from ..models import ChatEventOut, ChatMessageOut
+from ..models import ChatEventOut, ChatMessageOut, EventEnvelope, EventType
 
 router = APIRouter()
 
 # Kept below the 60s most proxies idle out at, so the connection stays warm.
 KEEPALIVE_S = 20.0
+
+
+def _frame(event: EventEnvelope) -> str:
+    """One SSE frame carrying a chat message."""
+    return f"data: {ChatEventOut.from_envelope(event).model_dump_json()}\n\n"
 
 
 @router.get("/health")
@@ -20,7 +25,7 @@ async def health(request: Request):
 @router.get("/messages")
 async def messages(request: Request, sender: str | None = None,
                    limit: int = Query(100, ge=1, le=1000)):
-    events = request.app.state.store.query(event_type="chat.message.sent",
+    events = request.app.state.store.query(event_type=EventType.CHAT_MESSAGE_SENT,
                                            sender=sender, limit=limit)
     return [ChatMessageOut.from_envelope(ev) for ev in events]
 
@@ -30,16 +35,16 @@ async def _chat_sse(request: Request, backlog: int) -> AsyncIterator[str]:
     with hub.subscribe() as queue:
         # Replay before streaming so a reconnecting client is not left with an empty panel.
         # Subscribing first means anything arriving mid-replay queues up rather than being lost.
-        for ev in reversed(store.query(event_type="chat.message.sent", limit=backlog)):
-            yield f"data: {ChatEventOut.from_envelope(ev).model_dump_json()}\n\n"
+        for ev in reversed(store.query(event_type=EventType.CHAT_MESSAGE_SENT, limit=backlog)):
+            yield _frame(ev)
         while True:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_S)
             except asyncio.TimeoutError:
                 yield ": keepalive\n\n"
                 continue
-            if event.type == "chat.message.sent":
-                yield f"data: {ChatEventOut.from_envelope(event).model_dump_json()}\n\n"
+            if event.type == EventType.CHAT_MESSAGE_SENT:
+                yield _frame(event)
 
 
 @router.get("/stream")

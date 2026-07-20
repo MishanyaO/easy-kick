@@ -1,20 +1,25 @@
+from enum import StrEnum
+
 from pydantic import BaseModel
 
-KNOWN_EVENTS = [
-    "chat.message.sent",
-    "channel.followed",
-    "channel.subscription.renewal",
-    "channel.subscription.gifts",
-    "channel.subscription.new",
-    "channel.reward.redemption.updated",
-    "livestream.status.updated",
-    "livestream.metadata.updated",
-    "moderation.banned",
-    "kicks.gifted",
-]
+
+class EventType(StrEnum):
+    """Kick webhook event names. The full set is what we subscribe to by default."""
+
+    CHAT_MESSAGE_SENT = "chat.message.sent"
+    CHANNEL_FOLLOWED = "channel.followed"
+    SUBSCRIPTION_RENEWAL = "channel.subscription.renewal"
+    SUBSCRIPTION_GIFTS = "channel.subscription.gifts"
+    SUBSCRIPTION_NEW = "channel.subscription.new"
+    REWARD_REDEMPTION_UPDATED = "channel.reward.redemption.updated"
+    LIVESTREAM_STATUS_UPDATED = "livestream.status.updated"
+    LIVESTREAM_METADATA_UPDATED = "livestream.metadata.updated"
+    MODERATION_BANNED = "moderation.banned"
+    KICKS_GIFTED = "kicks.gifted"
 
 
 class EventEnvelope(BaseModel):
+    # keep very simple for now
     type: str
     version: str
     message_id: str

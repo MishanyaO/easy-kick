@@ -1,33 +1,33 @@
 """Dev-only replay of a JSONL dataset into the event store."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ..config import PROJECT_ROOT
 from ..hub import EventHub
-from ..models import EventEnvelope
+from ..models import EventEnvelope, EventType
 from ..store import EventStore
 
 router = APIRouter(prefix="/dev", tags=["development"])
 logger = logging.getLogger("kick.simulator")
 
 DATASET = PROJECT_ROOT / "data" / "sample_stream.jsonl"
-EventType = Literal[
-    "chat.message.sent",
-    "channel.followed",
-    "channel.subscription.new",
-    "channel.subscription.renewal",
-    "kicks.gifted",
-]
+
+
+def _iso(moment: datetime) -> str:
+    """Kick renders UTC timestamps with a 'Z' suffix rather than '+00:00'."""
+    return moment.isoformat().replace("+00:00", "Z")
 
 
 @dataclass
@@ -55,38 +55,6 @@ class ReplayState:
         }
 
 
-class DatasetRow(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    delay_ms: int = Field(default=500, ge=0)
-    type: EventType
-    user: str = Field(min_length=1)
-    content: str | None = None
-    broadcaster: str = Field(default="streamer", min_length=1)
-    amount: int = Field(default=100, gt=0)
-    duration: int = Field(default=1, ge=1)
-
-    @model_validator(mode="after")
-    def require_chat_content(self) -> "DatasetRow":
-        if self.type == "chat.message.sent" and not self.content:
-            raise ValueError("content is required for chat messages")
-        return self
-
-
-def _load_dataset(path: Path) -> list[DatasetRow]:
-    rows: list[DatasetRow] = []
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            rows.append(DatasetRow.model_validate_json(line))
-        except ValidationError as exc:
-            raise ValueError(f"invalid dataset row at line {line_number}: {exc}") from exc
-    if not rows:
-        raise ValueError("dataset contains no events")
-    return rows
-
-
 def _user(username: str, *, with_identity: bool = False) -> dict[str, object]:
     """Build the user object included in Kick webhook payloads."""
     user_id = uuid.uuid5(uuid.NAMESPACE_URL, f"kick.com/{username}").int % 2_000_000_000
@@ -107,54 +75,97 @@ def _user(username: str, *, with_identity: bool = False) -> dict[str, object]:
     }
 
 
-def _build_event(row: DatasetRow) -> EventEnvelope:
-    event_message_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc)
-    timestamp = now.isoformat().replace("+00:00", "Z")
-    payload: dict[str, object] = {
-        "broadcaster": _user(row.broadcaster),
+def _chat(row: DatasetRow, now: datetime) -> dict[str, object]:
+    return {
+        "message_id": str(uuid.uuid4()),
+        "replies_to": None,
+        "sender": _user(row.user, with_identity=True),
+        "content": row.content,
+        "emotes": [],
+        "created_at": _iso(now),
     }
 
-    if row.type == "chat.message.sent":
-        payload.update(
-            message_id=str(uuid.uuid4()),
-            replies_to=None,
-            sender=_user(row.user, with_identity=True),
-            content=row.content,
-            emotes=[],
-            created_at=timestamp,
-        )
-    elif row.type == "channel.followed":
-        payload["follower"] = _user(row.user)
-    elif row.type in ("channel.subscription.new", "channel.subscription.renewal"):
-        payload.update(
-            subscriber=_user(row.user),
-            duration=row.duration,
-            created_at=timestamp,
-            expires_at=(now + timedelta(days=30 * row.duration))
-            .isoformat()
-            .replace("+00:00", "Z"),
-        )
-    elif row.type == "kicks.gifted":
-        payload.update(
-            sender=_user(row.user),
-            gift={
-                "amount": row.amount,
-                "name": "Rage Quit",
-                "type": "LEVEL_UP",
-                "tier": "MID",
-                "message": "",
-                "pinned_time_seconds": 600,
-            },
-            created_at=timestamp,
-        )
 
+def _follow(row: DatasetRow, now: datetime) -> dict[str, object]:
+    return {"follower": _user(row.user)}
+
+
+def _subscription(row: DatasetRow, now: datetime) -> dict[str, object]:
+    return {
+        "subscriber": _user(row.user),
+        "duration": row.duration,
+        "created_at": _iso(now),
+        "expires_at": _iso(now + timedelta(days=30 * row.duration)),
+    }
+
+
+def _kicks(row: DatasetRow, now: datetime) -> dict[str, object]:
+    return {
+        "sender": _user(row.user),
+        "gift": {
+            "amount": row.amount,
+            "name": "Rage Quit",
+            "type": "LEVEL_UP",
+            "tier": "MID",
+            "message": "",
+            "pinned_time_seconds": 600,
+        },
+        "created_at": _iso(now),
+    }
+
+
+# The event types the simulator can replay — a subset of what we subscribe to.
+PAYLOAD_BUILDERS: dict[EventType, Callable[[DatasetRow, datetime], dict[str, object]]] = {
+    EventType.CHAT_MESSAGE_SENT: _chat,
+    EventType.CHANNEL_FOLLOWED: _follow,
+    EventType.SUBSCRIPTION_NEW: _subscription,
+    EventType.SUBSCRIPTION_RENEWAL: _subscription,
+    EventType.KICKS_GIFTED: _kicks,
+}
+
+
+class DatasetRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    delay_ms: int = Field(default=500, ge=0)
+    type: EventType
+    user: str = Field(min_length=1)
+    content: str | None = None
+    broadcaster: str = Field(default="streamer", min_length=1)
+    amount: int = Field(default=100, gt=0)
+    duration: int = Field(default=1, ge=1)
+
+    @model_validator(mode="after")
+    def check_type_is_supported(self) -> DatasetRow:
+        if self.type not in PAYLOAD_BUILDERS:
+            raise ValueError(f"the simulator cannot build {self.type} events")
+        if self.type is EventType.CHAT_MESSAGE_SENT and not self.content:
+            raise ValueError("content is required for chat messages")
+        return self
+
+
+def _load_dataset(path: Path) -> list[DatasetRow]:
+    rows: list[DatasetRow] = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            rows.append(DatasetRow.model_validate_json(line))
+        except ValidationError as exc:
+            raise ValueError(f"invalid dataset row at line {line_number}: {exc}") from exc
+    if not rows:
+        raise ValueError("dataset contains no events")
+    return rows
+
+
+def _build_event(row: DatasetRow) -> EventEnvelope:
+    now = datetime.now(timezone.utc)
     return EventEnvelope(
-        type=row.type,
+        type=row.type.value,
         version="1",
-        message_id=event_message_id,
-        timestamp=timestamp,
-        payload=payload,
+        message_id=str(uuid.uuid4()),
+        timestamp=_iso(now),
+        payload={"broadcaster": _user(row.broadcaster), **PAYLOAD_BUILDERS[row.type](row, now)},
     )
 
 

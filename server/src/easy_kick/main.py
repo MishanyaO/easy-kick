@@ -60,6 +60,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(webhook.router)
     app.include_router(auth.router)
     app.include_router(subscriptions.router)
+    if settings.simulator_enabled:
+        from .routes import simulator
+        app.state.replay_task = None
+        app.include_router(simulator.router)
     return app
 
 

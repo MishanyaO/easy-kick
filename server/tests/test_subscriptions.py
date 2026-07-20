@@ -30,7 +30,7 @@ async def test_create_subscriptions_posts_to_kick(client, app, mock_kick):
 
 
 async def test_create_defaults_to_all_known_events(client, app, mock_kick):
-    from easy_kick.models import KNOWN_EVENTS
+    from easy_kick.models import EventType
     authorize(app)
     captured = {}
 
@@ -42,7 +42,7 @@ async def test_create_defaults_to_all_known_events(client, app, mock_kick):
     resp = await client.post("/subscriptions", json={"broadcaster_user_id": 123})
     assert resp.status_code == 200
     assert captured["body"]["broadcaster_user_id"] == 123
-    assert [e["name"] for e in captured["body"]["events"]] == KNOWN_EVENTS
+    assert [e["name"] for e in captured["body"]["events"]] == [e.value for e in EventType]
 
 
 async def test_kick_error_passthrough(client, app, mock_kick):

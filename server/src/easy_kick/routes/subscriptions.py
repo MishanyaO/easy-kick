@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel
 
-from ..models import KNOWN_EVENTS
+from ..models import EventType
 
 router = APIRouter()
 
@@ -14,7 +14,7 @@ class SubscribeRequest(BaseModel):
 @router.post("/subscriptions")
 async def create_subscriptions(body: SubscribeRequest, request: Request):
     return await request.app.state.kick.create_subscriptions(
-        body.events or KNOWN_EVENTS, body.broadcaster_user_id)
+        body.events or list(EventType), body.broadcaster_user_id)
 
 
 @router.get("/subscriptions")

@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from contextlib import suppress
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
@@ -32,15 +33,21 @@ async def load_public_key(app: FastAPI, *, force: bool = False) -> bool:
     return True
 
 
+def _parse_timestamp(timestamp: str) -> datetime | None:
+    """Kick sends either an epoch or ISO-8601. None if the value is neither."""
+    # OverflowError: an epoch far outside the range datetime can represent.
+    with suppress(ValueError, OverflowError):
+        return datetime.fromtimestamp(float(timestamp), tz=timezone.utc)
+    with suppress(ValueError):
+        return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    return None
+
+
 def _timestamp_age(timestamp: str) -> float | None:
-    """Seconds between now and a Kick event timestamp (ISO-8601 or epoch); None if unparseable."""
-    try:
-        sent = datetime.fromtimestamp(float(timestamp), tz=timezone.utc)
-    except ValueError:
-        try:
-            sent = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-        except ValueError:
-            return None
+    """Seconds between now and a Kick event timestamp; None if unparseable."""
+    sent = _parse_timestamp(timestamp)
+    if sent is None:
+        return None
     return abs((datetime.now(timezone.utc) - sent).total_seconds())
 
 

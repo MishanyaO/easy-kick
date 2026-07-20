@@ -1,5 +1,7 @@
 """Dev-only replay of a JSONL dataset into the event store."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import uuid
@@ -51,40 +53,6 @@ class ReplayState:
             "sent": self.sent,
             "dataset": DATASET.name,
         }
-
-
-class DatasetRow(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    delay_ms: int = Field(default=500, ge=0)
-    type: EventType
-    user: str = Field(min_length=1)
-    content: str | None = None
-    broadcaster: str = Field(default="streamer", min_length=1)
-    amount: int = Field(default=100, gt=0)
-    duration: int = Field(default=1, ge=1)
-
-    @model_validator(mode="after")
-    def check_type_is_supported(self) -> "DatasetRow":
-        if self.type not in PAYLOAD_BUILDERS:
-            raise ValueError(f"the simulator cannot build {self.type} events")
-        if self.type is EventType.CHAT_MESSAGE_SENT and not self.content:
-            raise ValueError("content is required for chat messages")
-        return self
-
-
-def _load_dataset(path: Path) -> list[DatasetRow]:
-    rows: list[DatasetRow] = []
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            rows.append(DatasetRow.model_validate_json(line))
-        except ValidationError as exc:
-            raise ValueError(f"invalid dataset row at line {line_number}: {exc}") from exc
-    if not rows:
-        raise ValueError("dataset contains no events")
-    return rows
 
 
 def _user(username: str, *, with_identity: bool = False) -> dict[str, object]:
@@ -154,6 +122,40 @@ PAYLOAD_BUILDERS: dict[EventType, Callable[[DatasetRow, datetime], dict[str, obj
     EventType.SUBSCRIPTION_RENEWAL: _subscription,
     EventType.KICKS_GIFTED: _kicks,
 }
+
+
+class DatasetRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    delay_ms: int = Field(default=500, ge=0)
+    type: EventType
+    user: str = Field(min_length=1)
+    content: str | None = None
+    broadcaster: str = Field(default="streamer", min_length=1)
+    amount: int = Field(default=100, gt=0)
+    duration: int = Field(default=1, ge=1)
+
+    @model_validator(mode="after")
+    def check_type_is_supported(self) -> DatasetRow:
+        if self.type not in PAYLOAD_BUILDERS:
+            raise ValueError(f"the simulator cannot build {self.type} events")
+        if self.type is EventType.CHAT_MESSAGE_SENT and not self.content:
+            raise ValueError("content is required for chat messages")
+        return self
+
+
+def _load_dataset(path: Path) -> list[DatasetRow]:
+    rows: list[DatasetRow] = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            rows.append(DatasetRow.model_validate_json(line))
+        except ValidationError as exc:
+            raise ValueError(f"invalid dataset row at line {line_number}: {exc}") from exc
+    if not rows:
+        raise ValueError("dataset contains no events")
+    return rows
 
 
 def _build_event(row: DatasetRow) -> EventEnvelope:

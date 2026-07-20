@@ -80,6 +80,17 @@ async def test_stale_timestamp_rejected(client, app, rsa_keys):
     assert app.state.store.stats()["events"] == 0
 
 
+async def test_unparseable_timestamps_rejected(client, app, rsa_keys):
+    """Hostile timestamp headers are read before signature checks, so they must not crash."""
+    private_key, _ = rsa_keys
+    body = json.dumps(CHAT_PAYLOAD).encode()
+    for timestamp in ["1e30", "-1e30", "inf", "1e400", "nan", "9" * 19, "not-a-date"]:
+        headers = webhook_headers(private_key, "m-ts", body, timestamp=timestamp)
+        resp = await client.post("/webhook", content=body, headers=headers)
+        assert resp.status_code == 401, f"{timestamp!r} returned {resp.status_code}"
+    assert app.state.store.stats()["events"] == 0
+
+
 async def test_malformed_payload_returns_200(client, app, rsa_keys):
     private_key, _ = rsa_keys
     body = b"this is not json"

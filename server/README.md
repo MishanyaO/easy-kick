@@ -81,6 +81,37 @@ Replayed events go through the same store-and-publish path as real webhooks, so 
 appear on `/stream` and `/messages` identically. The dataset is
 [`data/sample_stream.jsonl`](data/sample_stream.jsonl) — 60 events, ~63s at `speed=1`.
 
+## Gambit — the controller
+
+A loop that reads chat state, picks an intervention (or nothing), waits 60s, measures the
+lift against a matched control, and updates a Beta posterior. Five arms × three chat states
+= fifteen posteriors, Thompson sampling, stdlib only.
+
+| Module | Job |
+|---|---|
+| `context.py` | Viewer count, category and uptime from `GET /channels`. Degrades to `viewer_count = None` |
+| `engagement.py` | Rolling 60s metrics from the event store, and `lull` / `steady` / `spike` |
+| `bandit.py` | The policy, plus the `random` / `timer` / `silent` baselines |
+| `reward.py` | Scores a closed window against a matched control, not a raw level |
+| `controller.py` | The loop, the safety rails, and the human in the loop |
+| `gym.py` | A reactive persona simulator with forkable twin worlds, and the headless harness |
+
+Nothing is persisted. Chat is processed in memory and only aggregate counts reach the policy.
+
+The gym is the development environment: it writes `EventEnvelope`s into the same store real
+webhooks write into, so the bandit never sees anything it would not see live.
+
+```bash
+curl -X POST 'http://localhost:8000/dev/gym?speed=10&seed=1'          # live, into /stream
+curl -X POST 'http://localhost:8000/dev/gym/speedrun?decisions=2000'  # headless, flat out
+curl -X POST 'http://localhost:8000/dev/gym/race?policies=gambit,timer'
+uv run python -m easy_kick.eval.run_eval --worlds 12    # writes data/eval_results.json
+```
+
+Against live Kick traffic the loop is off by default. Set `KICK_CONTROLLER_ENABLED=true` and
+`KICK_BROADCASTER_USER_ID` to run it for real — it needs the `chat:write` and `channel:read`
+scopes. Only one clock may drive the loop, so leave it off when running the gym.
+
 ## Endpoints
 
 | Method | Path | Purpose |
@@ -99,6 +130,17 @@ appear on `/stream` and `/messages` identically. The dataset is
 | GET | `/dev/replay` | Replay status + progress (simulator only) |
 | POST | `/dev/replay?speed=&loop=` | Start dataset replay (simulator only) |
 | DELETE | `/dev/replay` | Stop the replay (simulator only) |
+| GET/POST/DELETE | `/dev/gym?speed=&seed=` | The reactive gym, driving the controller on virtual time (simulator only) |
+| POST | `/dev/gym/speedrun?decisions=&policy=&truth=` | Headless run, flat out (simulator only) |
+| POST | `/dev/gym/race?seed=&policies=` | One world per policy on the same seed (simulator only) |
+| GET | `/controller/policy` | Learned table, rails, and the generated insight sentences |
+| POST | `/controller/action/{id}/{send\|dismiss}` | Streamer approves or vetoes a suggested card |
+| PUT | `/controller/autonomy` | Per-arm `auto`/`ask`/`off`, and the kill switch |
+| GET | `/eval/results` | Whatever `easy_kick.eval.run_eval` last wrote |
+
+`/stream` carries chat plus the controller's own frames — `controller.action`, `controller.result`,
+`controller.bandit`, `controller.context` — as synthetic event types whose payload is already the
+frontend shape (`client/src/types.ts`).
 
 ## Tests
 

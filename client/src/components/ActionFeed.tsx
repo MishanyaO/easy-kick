@@ -1,17 +1,18 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  BarChart3, HelpCircle, FileText, Bell, Scissors, Zap, TrendingUp, Sparkles,
+  BarChart3, HelpCircle, Flame, Hand, Coins, Minus, Zap, TrendingUp, Sparkles,
 } from 'lucide-react';
-import type { ActionEvent, ActionResult } from '../types';
+import type { ActionEvent, ActionResult, Arm } from '../types';
 import VoteBars from '../snippets/actions/VoteBars';
 
-const KIND_ICON = {
-  poll: BarChart3,
-  trivia: HelpCircle,
-  recap: FileText,
-  nudge: Bell,
-  clip: Scissors,
-} as const;
+const KIND_ICON: Record<Arm, typeof BarChart3> = {
+  nothing: Minus,
+  emote_rally: Flame,
+  chat_poll: BarChart3,
+  question_relay: HelpCircle,
+  shoutout: Hand,
+  prediction: Coins,
+};
 
 function ActionCard({
   action,

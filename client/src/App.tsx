@@ -44,7 +44,7 @@ export default function App() {
           if (prev && (prev.status === 'dismissed' || prev.status === 'closed')) return a;
           return { ...a, [e.id]: e };
         });
-      } else {
+      } else if (e.type === 'result') {
         setResults((r) => ({ ...r, [e.action_id]: e }));
         setActions((a) =>
           a[e.action_id] ? { ...a, [e.action_id]: { ...a[e.action_id], status: 'closed' } } : a,
@@ -68,8 +68,13 @@ export default function App() {
     const result: ActionResult = {
       type: 'result',
       action_id: action.id,
+      state: action.state,
+      arm: action.kind,
       votes,
       engagement_delta: Math.round((0.1 + Math.random() * 0.35) * 100) / 100,
+      reward: Math.round(Math.random() * 100) / 100,
+      lift_naive: Math.round((0.1 + Math.random() * 0.5) * 100) / 100,
+      outcome: 'fired',
     };
     setResults((r) => ({ ...r, [action.id]: result }));
     setActions((a) => ({ ...a, [action.id]: { ...action, status: 'closed' } }));

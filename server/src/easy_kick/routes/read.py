@@ -1,4 +1,5 @@
 import asyncio
+import json
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Query, Request
@@ -10,11 +11,20 @@ router = APIRouter()
 
 # Kept below the 60s most proxies idle out at, so the connection stays warm.
 KEEPALIVE_S = 20.0
+CONTROLLER_PREFIX = "controller."
 
 
-def _frame(event: EventEnvelope) -> str:
-    """One SSE frame carrying a chat message."""
-    return f"data: {ChatEventOut.from_envelope(event).model_dump_json()}\n\n"
+def _frame(event: EventEnvelope) -> str | None:
+    """One SSE frame, or None for an event the dashboard has no use for.
+
+    Controller frames ride the same stream as synthetic event types whose payload is already
+    the frontend shape, so they need no envelope of their own.
+    """
+    if event.type == EventType.CHAT_MESSAGE_SENT:
+        return f"data: {ChatEventOut.from_envelope(event).model_dump_json()}\n\n"
+    if event.type.startswith(CONTROLLER_PREFIX):
+        return f"data: {json.dumps(event.payload)}\n\n"
+    return None
 
 
 @router.get("/health")
@@ -36,15 +46,15 @@ async def _chat_sse(request: Request, backlog: int) -> AsyncIterator[str]:
         # Replay before streaming so a reconnecting client is not left with an empty panel.
         # Subscribing first means anything arriving mid-replay queues up rather than being lost.
         for ev in reversed(store.query(event_type=EventType.CHAT_MESSAGE_SENT, limit=backlog)):
-            yield _frame(ev)
+            yield f"data: {ChatEventOut.from_envelope(ev).model_dump_json()}\n\n"
         while True:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_S)
             except asyncio.TimeoutError:
                 yield ": keepalive\n\n"
                 continue
-            if event.type == EventType.CHAT_MESSAGE_SENT:
-                yield _frame(event)
+            if frame := _frame(event):
+                yield frame
 
 
 @router.get("/stream")

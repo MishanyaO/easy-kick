@@ -1,4 +1,5 @@
 from collections import deque
+from typing import Iterator
 
 from .models import EventEnvelope
 
@@ -18,6 +19,10 @@ class EventStore:
         self._seen_ids.add(event.message_id)
         self._events.append(event)
         return True
+
+    def iter_recent(self) -> Iterator[EventEnvelope]:
+        """Buffered events, newest first. Callers scanning a time window stop early."""
+        return reversed(self._events)
 
     def query(self, event_type: str | None = None, sender: str | None = None,
               limit: int = 100) -> list[EventEnvelope]:

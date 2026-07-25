@@ -1,4 +1,7 @@
+from contextlib import suppress
+from datetime import datetime, timezone
 from enum import StrEnum
+from functools import lru_cache
 
 from pydantic import BaseModel
 
@@ -18,6 +21,55 @@ class EventType(StrEnum):
     KICKS_GIFTED = "kicks.gifted"
 
 
+class ChatState(StrEnum):
+    """How busy chat is relative to this channel's own rolling baseline."""
+
+    LULL = "lull"
+    STEADY = "steady"
+    SPIKE = "spike"
+
+
+class Arm(StrEnum):
+    """An intervention the controller can choose. `NOTHING` is a real arm and is scored."""
+
+    NOTHING = "nothing"
+    EMOTE_RALLY = "emote_rally"
+    CHAT_POLL = "chat_poll"
+    QUESTION_RELAY = "question_relay"
+    SHOUTOUT = "shoutout"
+    PREDICTION = "prediction"
+
+
+class Autonomy(StrEnum):
+    """How much rope the streamer gives one arm."""
+
+    AUTO = "auto"
+    ASK = "ask"
+    OFF = "off"
+
+
+# What the bandit chooses between. `PREDICTION` stakes viewers' Channel Points, so it stays
+# a manual card rather than an arm we explore.
+BANDIT_ARMS = (Arm.NOTHING, Arm.EMOTE_RALLY, Arm.CHAT_POLL, Arm.QUESTION_RELAY, Arm.SHOUTOUT)
+
+
+def parse_timestamp(timestamp: str) -> datetime | None:
+    """Kick sends either an epoch or ISO-8601. None if the value is neither."""
+    # OverflowError: an epoch far outside the range datetime can represent.
+    with suppress(ValueError, OverflowError):
+        return datetime.fromtimestamp(float(timestamp), tz=timezone.utc)
+    with suppress(ValueError):
+        return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    return None
+
+
+@lru_cache(maxsize=8192)
+def _epoch(timestamp: str) -> float | None:
+    # Cached: the engagement windows re-read the same events on every tick.
+    moment = parse_timestamp(timestamp)
+    return moment.timestamp() if moment else None
+
+
 class EventEnvelope(BaseModel):
     # keep very simple for now
     type: str
@@ -29,6 +81,10 @@ class EventEnvelope(BaseModel):
     def username(self, key: str) -> str | None:
         node = self.payload.get(key)
         return node.get("username") if isinstance(node, dict) else None
+
+    def epoch(self) -> float | None:
+        """Envelope time as a unix timestamp; None if unparseable."""
+        return _epoch(self.timestamp)
 
 
 class ChatEventOut(BaseModel):

@@ -51,12 +51,30 @@ export type InsightEvent = {
   shoutouts: Shoutout[];
 };
 
+/** One intervention the controller can choose. `nothing` is a real arm and is scored. */
+export type Arm =
+  | 'nothing'
+  | 'emote_rally'
+  | 'chat_poll'
+  | 'question_relay'
+  | 'shoutout'
+  | 'prediction';
+
+/** Chat volume relative to this channel's own rolling baseline. */
+export type ChatState = 'lull' | 'steady' | 'spike';
+
+/** How much rope the streamer gives one arm. Human-set, never learned. */
+export type Autonomy = 'auto' | 'ask' | 'off';
+
 export type ActionEvent = {
   type: 'action';
   id: string;
   ts: string;
-  kind: 'poll' | 'trivia' | 'recap' | 'nudge' | 'clip';
-  trigger: 'spike' | 'lull' | 'topic_shift' | 'manual';
+  kind: Arm;
+  trigger: 'spike' | 'lull' | 'steady' | 'topic_shift' | 'manual';
+  state: ChatState;
+  propensity: number; // P(this arm wins) when it was picked — logged for off-policy eval
+  autonomy: Autonomy;
   reason: string;
   title: string;
   options: string[];
@@ -68,8 +86,49 @@ export type ActionEvent = {
 export type ActionResult = {
   type: 'result';
   action_id: string;
+  state: ChatState;
+  arm: Arm;
   votes: Record<string, number>;
-  engagement_delta: number;
+  engagement_delta: number; // matched-control lift, in participation points
+  reward: number; // [0,1] after the logistic squash
+  lift_naive: number; // the biased pre/post estimator, kept for the comparison
+  lift_true?: number; // gym only — never present on live Kick
+  outcome: 'fired' | 'skipped' | 'dismissed' | 'railed';
 };
 
-export type StreamEvent = ChatEvent | InsightEvent | ActionEvent | ActionResult;
+export type BanditFrame = {
+  type: 'bandit';
+  ts: string;
+  decisions: number;
+  posteriors: {
+    state: ChatState;
+    arm: Arm;
+    alpha: number;
+    beta: number;
+    mean: number;
+    pulls: number;
+  }[];
+  last_decision?: {
+    state: ChatState;
+    samples: Record<Arm, number>;
+    chosen: Arm;
+    propensity: number;
+  };
+};
+
+export type ContextFrame = {
+  type: 'context';
+  viewer_count: number | null;
+  category: string | null;
+  participation: number; // unique chatters / viewers
+  uptime_s: number;
+  streamer_speaking?: boolean;
+};
+
+export type StreamEvent =
+  | ChatEvent
+  | InsightEvent
+  | ActionEvent
+  | ActionResult
+  | BanditFrame
+  | ContextFrame;

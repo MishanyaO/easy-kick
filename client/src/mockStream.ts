@@ -172,21 +172,27 @@ function makeInsight(t: number, elapsed: number, started: number, loop: number):
 
 const POLL: Omit<ActionEvent, 'type' | 'ts' | 'status'> = {
   id: 'act-poll',
-  kind: 'poll',
+  kind: 'chat_poll',
   trigger: 'lull',
+  state: 'lull',
+  propensity: 0.62,
+  autonomy: 'ask',
   reason: 'Chat quiet for 90s — msgs/min down 62%',
   title: 'Next map: let chat pick?',
   options: ['Ascent', 'Bind', 'Haven', 'Lotus'],
   auto_fire: true,
 };
 
-const TRIVIA: Omit<ActionEvent, 'type' | 'ts' | 'status'> = {
-  id: 'act-trivia',
-  kind: 'trivia',
-  trigger: 'topic_shift',
+const RELAY: Omit<ActionEvent, 'type' | 'ts' | 'status'> = {
+  id: 'act-relay',
+  kind: 'question_relay',
+  trigger: 'steady',
+  state: 'steady',
+  propensity: 0.34,
+  autonomy: 'ask',
   reason: 'Topic shifted to “rank” — 14 questions in 2min',
-  title: 'Trivia: What was his peak rank?',
-  options: ['Diamond', 'Immortal', 'Radiant', 'Ascendant'],
+  title: '@lurkmaster asked: what was your peak rank?',
+  options: [],
   auto_fire: false,
 };
 
@@ -229,13 +235,18 @@ export function startMockStream(onEvent: Handler): () => void {
       const result: ActionResult = {
         type: 'result',
         action_id: 'act-poll',
+        state: 'lull',
+        arm: 'chat_poll',
         votes: { Ascent: 41, Bind: 18, Haven: 27, Lotus: 33 },
         engagement_delta: 0.38,
+        reward: 0.81,
+        lift_naive: 0.44,
+        outcome: 'fired',
       };
       onEvent(result);
     });
-    if (t >= 70) fireOnce('trivia', () =>
-      onEvent({ ...TRIVIA, type: 'action', ts: new Date().toISOString(), status: 'suggested' }));
+    if (t >= 70) fireOnce('relay', () =>
+      onEvent({ ...RELAY, type: 'action', ts: new Date().toISOString(), status: 'suggested' }));
   }, 400);
 
   return () => clearInterval(interval);

@@ -185,8 +185,8 @@ gym.py ─────────┘        │  Hub                           
    └── reacts to fire ───┤                            bandit.py (Thompson)
                          │                                   │ arm + propensity
     context.py ──────────┤                                   ▼
-    (viewers, category,  │                            director.py (loop, rails,
-     optional audio)     │                                        LLM copy)
+    (viewers, category,  │                            controller.py (loop, rails,
+     optional audio)     │                                          LLM copy)
                          │                                   │
                          └───────►  SSE /stream  ◄───────────┘
 ```
@@ -283,7 +283,7 @@ previous intervention's tail (upward) or its fatigue (downward). Tag any window 
 120s of a fire as `contaminated` and exclude those from the control pool only; they still count
 as decisions. Do this before plotting anything, or you will spend hour four chasing an offset.
 
-### `director.py` — the loop
+### `controller.py` — the loop
 
 ```
 every 5s (virtual):
@@ -303,7 +303,7 @@ on approval:
 on fired/nothing window close:
     r = reward(state, arm, window)
     bandit.update(state, arm, r)
-    emit director.result + director.bandit
+    emit controller.result + controller.bandit
 ```
 
 Six things that are easy to get wrong:
@@ -395,12 +395,12 @@ costs a rail, never the loop.
 Agree these first, mock them immediately, then build in parallel. With four people and one day,
 integration is the risk, not the algorithms.
 
-**SSE — multiplex onto the existing `/stream`.** No change to `EventHub`. Director frames are
-`EventEnvelope`s with synthetic types — `director.insight`, `director.action`,
-`director.result`, `director.bandit`, `director.context` — whose `payload` is already the
+**SSE — multiplex onto the existing `/stream`.** No change to `EventHub`. Controller frames are
+`EventEnvelope`s with synthetic types — `controller.insight`, `controller.action`,
+`controller.result`, `controller.bandit`, `controller.context` — whose `payload` is already the
 frontend shape. `EventEnvelope.type` is a plain `str`, so these coexist with `EventType` without
 touching `models.py`. `read.py::_chat_sse` grows a dispatch: chat events keep the existing path,
-`director.*` events serialise `event.payload` directly, everything else is still dropped.
+`controller.*` events serialise `event.payload` directly, everything else is still dropped.
 
 ```ts
 // client/src/types.ts
@@ -445,9 +445,9 @@ export type ContextFrame = {
 | GET / DELETE | `/dev/gym` | Status / stop |
 | POST | `/dev/gym/speedrun?decisions=2000&seed=` | Headless run, streaming posterior snapshots |
 | POST | `/dev/gym/race?seed=&policies=gambit,timer` | Forked head-to-head (§9) |
-| GET | `/director/policy` | Learned policy table + generated insight sentences |
-| POST | `/director/action/{id}/{send\|dismiss}` | Streamer approve / veto |
-| PUT | `/director/autonomy` | Per-arm `auto`/`ask`/`off`, caps, quiet hours |
+| GET | `/controller/policy` | Learned policy table + generated insight sentences |
+| POST | `/controller/action/{id}/{send\|dismiss}` | Streamer approve / veto |
+| PUT | `/controller/autonomy` | Per-arm `auto`/`ask`/`off`, caps, quiet hours |
 | GET | `/eval/results` | `eval_results.json` for the charts |
 
 ---
@@ -556,11 +556,11 @@ with Recharts (already a dependency).
 - `reward`: `matched` returns the clean control-pool mean; contaminated windows are excluded from
   the pool but still counted as decisions; `naive` returns the pre-window value; `nothing`
   windows carry no `fire_cost`.
-- `director`: eligibility is resolved before selection; propensity uses that set. Approval
+- `controller`: eligibility is resolved before selection; propensity uses that set. Approval
   starts a fresh 60s window; dismissal updates preference only. Rail-forced no-ops and a failed
   `bandit.select` open no window and update no posterior.
 - `context`: a failed `GET /channels` degrades to `viewer_count = None` without raising.
-- Route tests for `/dev/gym` and `/director/*` mirroring `tests/test_simulator.py`.
+- Route tests for `/dev/gym` and `/controller/*` mirroring `tests/test_simulator.py`.
 - The live-Kick path stays green throughout.
 
 ---
@@ -571,11 +571,11 @@ with Recharts (already a dependency).
 |---|---|---|
 | **MLE 1** | `gym.py` — personas, θ, virtual clock, `fork()`, simulated viewer count, seed tuning so learning converges in demo time | A gym that writes real `EventEnvelope`s and forks cleanly |
 | **MLE 2** | `engagement.py`, `bandit.py`, `reward.py`, `eval/run_eval.py` | 15 posteriors + `eval_results.json` |
-| **BE** | `context.py`, `director.py`, `routes/director.py`, SSE multiplexing, LLM copy with template fallback, live-Kick path | Frames on `/stream` matching §8 exactly |
+| **BE** | `context.py`, `controller.py`, `routes/controller.py`, SSE multiplexing, LLM copy with template fallback, live-Kick path | Frames on `/stream` matching §8 exactly |
 | **FE** | `mockStream.ts` → real SSE; streamer view; autonomy panel; head-to-head view; Bandit Brain behind a toggle; eval charts | The thing judges actually look at |
 
-New files: `context.py`, `gym.py`, `engagement.py`, `bandit.py`, `reward.py`, `director.py`,
-`routes/director.py`, `eval/run_eval.py`.
+New files: `context.py`, `gym.py`, `engagement.py`, `bandit.py`, `reward.py`, `controller.py`,
+`routes/controller.py`, `eval/run_eval.py`.
 
 **Frontend layout.** The streamer view is the default: chat state, current suggestion, autonomy
 controls, the three insight sentences. The Bandit Brain (15 Beta densities) sits behind an

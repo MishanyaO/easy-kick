@@ -64,12 +64,6 @@ h3 {
   background: transparent;
 }
 
-/* react-grid-layout theming (drag placeholder + resize handle) */
-.react-grid-item.react-grid-placeholder {
-  background: var(--kick-green) !important;
-  opacity: 0.08;
-  border-radius: 8px;
-}
 .react-grid-item > .react-resizable-handle::after {
   border-color: var(--text-muted) !important;
 }

@@ -4,18 +4,30 @@
    companion) into any project to get the same look.
    Usage: class="bg-[var(--bg-surface)] text-[var(--text-secondary)]" */
 
+/* Values below are Kick's own, read off the compiled stylesheets that
+   dashboard.kick.com ships — their `surface-*` / `primary-*` utilities
+   resolve to these. Don't "improve" them; drift shows up immediately
+   when our panels sit next to Kick chrome. */
 :root {
-  --kick-green: #53fc18; /* accent, CTAs, live indicators — dark text on top only */
-  --kick-green-dim: #3fbf13; /* hover/pressed */
-  --bg-base: #0b0e0f; /* app background */
-  --bg-surface: #131718; /* cards, panels */
-  --bg-elevated: #1c2123; /* hover, inputs, chat rows */
-  --border: #262c2e;
+  --kick-green: #53fc18; /* primary-base — CTAs, live indicators; dark text on top only */
+  --kick-green-dim: #3ad903; /* green-600, hover/pressed */
+  --bg-page: #000000; /* the void panels float on — gutters between them */
+  --bg-base: #0b0b0c; /* surface-lowest — nav, sidebar */
+  --bg-surface: #171a1c; /* surface-base — cards, panels */
+  --bg-elevated: #232629; /* surface-highest — hover, inputs, chat rows */
+  --bg-selected: #42474d; /* secondary-base — active nav item */
+  /* outline-decorative — 16% white. Translucent on purpose: an opaque grey
+     disappears against whichever surface happens to match it. */
+  --border: #f0f1f229;
   --text-primary: #ffffff;
-  --text-secondary: #a3a8a6;
-  --text-muted: #6b7270;
+  --text-secondary: #9fa6ad; /* neutral-400 */
+  --text-muted: #606971; /* neutral-600 */
+  --on-primary: #0b0b0c; /* text colour on top of --kick-green */
   --danger: #ff4d4d;
   --warn: #ffb020;
+
+  --navbar-height: 60px;
+  --sidebar-width: 256px;
 }
 
 /* ── Base ── */

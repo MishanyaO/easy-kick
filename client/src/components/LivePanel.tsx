@@ -5,8 +5,10 @@ import { Zap, Check, Clock } from 'lucide-react';
 import type { GambitState } from '../useGambit';
 import { STATE_LABEL, VERDICT_COLOR, labelFor, pct, points } from '../types';
 
-const SHELL =
+// Docked sits on `--bg-elevated` so it reads as content on the host panel, not a card on a card.
+const FLOATING =
   'w-[360px] rounded-xl border bg-[var(--bg-surface)] shadow-[0_18px_50px_-8px_rgba(0,0,0,0.85)]';
+const DOCKED = 'w-full rounded-sm border bg-[var(--bg-elevated)]';
 
 function Spark({ data, height = 22 }: { data: number[]; height?: number }) {
   if (data.length < 2) return <div style={{ height }} />;
@@ -24,10 +26,13 @@ function Spark({ data, height = 22 }: { data: number[]; height?: number }) {
   );
 }
 
-export default function LivePanel({ s, onDecide }: {
+export default function LivePanel({ s, onDecide, docked = false }: {
   s: GambitState;
   onDecide: (id: string, v: 'send' | 'dismiss') => void;
+  /** Render flush inside a host panel instead of floating over the preview. */
+  docked?: boolean;
 }) {
+  const SHELL = docked ? DOCKED : FLOATING;
   const state = s.pending?.state ?? 'steady';
   const measuring = Object.values(s.inflight);
   const last = s.results.find((r) => r.outcome === 'fired');
@@ -36,25 +41,41 @@ export default function LivePanel({ s, onDecide }: {
   if (s.pending) {
     const a = s.pending;
     return (
-      <div className={`${SHELL} p-5`} style={{ borderColor: 'var(--warn)' }}>
+      <div className={`${SHELL} ${docked ? 'p-3' : 'p-5'}`} style={{ borderColor: 'var(--warn)' }}>
         <div className="flex items-center gap-1.5">
-          <Zap size={15} className="text-[var(--warn)]" />
-          <span className="text-[13px] font-bold tracking-[0.2em] text-[var(--warn)]">
+          <Zap size={docked ? 12 : 15} className="text-[var(--warn)]" />
+          <span
+            className={`font-bold tracking-[0.2em] text-[var(--warn)] ${docked ? 'text-[10px]' : 'text-[13px]'}`}
+          >
             {STATE_LABEL[a.state]}
           </span>
           <span className="ml-auto text-[10px] text-[var(--text-muted)]">{a.kind}</span>
         </div>
-        <p className="mt-1 text-[11px] text-[var(--text-muted)]">{a.reason}</p>
+        <p className={`text-[var(--text-muted)] ${docked ? 'mt-0.5 text-[10px]' : 'mt-1 text-[11px]'}`}>
+          {a.reason}
+        </p>
 
-        <p className="mt-4 text-[20px] font-semibold leading-tight text-[var(--text-primary)]">
+        <p
+          className={`font-semibold leading-tight text-[var(--text-primary)] ${
+            docked ? 'mt-2 text-[13px]' : 'mt-4 text-[20px]'
+          }`}
+        >
           “{a.body}”
         </p>
 
-        <button onClick={() => onDecide(a.id, 'send')}
-          className="mt-4 w-full rounded-lg bg-[var(--kick-green)] py-4 text-base font-bold text-black">
+        <button
+          onClick={() => onDecide(a.id, 'send')}
+          className={`w-full bg-[var(--kick-green)] font-bold text-[var(--on-primary)] transition-colors hover:bg-[var(--kick-green-dim)] ${
+            docked ? 'mt-2 rounded-sm py-1.5 text-xs' : 'mt-4 rounded-lg py-4 text-base'
+          }`}
+        >
           Send to chat
         </button>
-        <div className="mt-2 flex items-center justify-between text-[10px] text-[var(--text-muted)]">
+        <div
+          className={`flex items-center justify-between text-[10px] text-[var(--text-muted)] ${
+            docked ? 'mt-1.5' : 'mt-2'
+          }`}
+        >
           <span>picked with p={a.propensity.toFixed(2)} · {a.autonomy}</span>
           <button onClick={() => onDecide(a.id, 'dismiss')} className="underline">skip</button>
         </div>

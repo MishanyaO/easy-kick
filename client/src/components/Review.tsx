@@ -30,7 +30,8 @@ function TacticsTab({ s }: { s: GambitState }) {
     );
   }
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-2 gap-3 overflow-y-auto pr-1 xl:grid-cols-2">
+    // Stacked, not `xl:grid-cols-2`: that tracks the viewport, not the host panel's width.
+    <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
       {STATES.map((state) => {
         const arms = posteriors.filter((p) => p.state === state)
           .sort((a, b) => b.mean - a.mean);
@@ -38,7 +39,7 @@ function TacticsTab({ s }: { s: GambitState }) {
         const best = tried[0];
         return (
           <section key={state}
-            className="flex min-h-0 flex-col rounded-xl border border-[var(--border)] bg-[var(--bg-surface)] p-4">
+            className="flex shrink-0 flex-col rounded-sm border border-[var(--border)] bg-[var(--bg-elevated)] p-3">
             <div className="flex items-baseline gap-2">
               <span className="text-[11px] font-bold tracking-[0.2em] text-[var(--text-secondary)]">
                 {STATE_LABEL[state]}
@@ -48,7 +49,7 @@ function TacticsTab({ s }: { s: GambitState }) {
               </span>
             </div>
 
-            <div className="mt-2.5 rounded-lg border px-3 py-2"
+            <div className="mt-2.5 rounded-sm border px-3 py-2"
               style={{ borderColor: best ? 'var(--kick-green)' : 'var(--border)' }}>
               <span className="text-[9px] font-bold tracking-[0.2em] text-[var(--text-muted)]">
                 LEADING HERE
@@ -72,8 +73,8 @@ function TacticsTab({ s }: { s: GambitState }) {
                         border: a.pulls ? undefined : '1px solid var(--text-muted)' }} />
                     <span className="truncate text-[12px] text-[var(--text-primary)]">{a.arm}</span>
                   </span>
-                  <div className="h-1.5 flex-1 rounded bg-[var(--bg-elevated)]">
-                    <div className="h-1.5 rounded bg-[var(--kick-green)]"
+                  <div className="h-1.5 flex-1 rounded-sm bg-[var(--bg-surface)]">
+                    <div className="h-1.5 rounded-sm bg-[var(--kick-green)]"
                       style={{ width: `${a.mean * 100}%` }} />
                   </div>
                   <span className="tnum w-12 shrink-0 text-right text-[12px] font-bold text-[var(--text-primary)]">
@@ -89,18 +90,18 @@ function TacticsTab({ s }: { s: GambitState }) {
         );
       })}
 
-      <section className="flex min-h-0 flex-col rounded-xl border border-[var(--border)] bg-[var(--bg-surface)] p-4">
+      <section className="flex shrink-0 flex-col rounded-sm border border-[var(--border)] bg-[var(--bg-elevated)] p-3">
         <span className="text-[11px] font-bold tracking-[0.2em] text-[var(--text-secondary)]">
           HOW THE EXPERIMENT RUNS
         </span>
         <div className="mt-3 flex gap-2">
-          <div className="flex-1 rounded-lg bg-[var(--bg-base)] px-3 py-2">
+          <div className="flex-1 rounded-sm bg-[var(--bg-surface)] px-3 py-2">
             <div className="tnum text-2xl font-bold text-[var(--kick-green)]">
               {s.bandit?.decisions ?? 0}
             </div>
             <div className="text-[10px] text-[var(--text-muted)]">decisions taken</div>
           </div>
-          <div className="flex-1 rounded-lg bg-[var(--bg-base)] px-3 py-2">
+          <div className="flex-1 rounded-sm bg-[var(--bg-surface)] px-3 py-2">
             <div className="tnum text-2xl font-bold text-[var(--warn)]">
               {s.results.filter((r) => r.arm === 'nothing').length}
             </div>
@@ -122,6 +123,35 @@ function TacticsTab({ s }: { s: GambitState }) {
   );
 }
 
+/** A state summary that doubles as the filter control for the ledger below it. */
+function Tile({ k, label, set, active, onSelect }: {
+  k: Filter;
+  label: string;
+  set: Row[];
+  active: boolean;
+  onSelect: (k: Filter) => void;
+}) {
+  const f = set.filter((r) => r.outcome === 'fired');
+  return (
+    <button onClick={() => onSelect(k)}
+      className="flex-1 rounded-sm border px-3 py-2 text-left transition-colors"
+      style={{
+        borderColor: active ? 'var(--kick-green)' : 'var(--border)',
+        background: active ? 'var(--bg-elevated)' : 'transparent',
+      }}>
+      <div className="text-[9px] font-bold tracking-[0.2em] text-[var(--text-muted)]">{label}</div>
+      <div className="flex items-baseline gap-1.5">
+        <span className="tnum text-lg font-bold text-[var(--kick-green)]">
+          {points(f.reduce((a, r) => a + r.engagement_delta, 0))}
+        </span>
+        <span className="text-[10px] text-[var(--text-muted)]">
+          {f.filter((r) => labelFor(r) === 'Worked').length}/{f.length} worked
+        </span>
+      </div>
+    </button>
+  );
+}
+
 export default function Review({ s }: { s: GambitState }) {
   const [tab, setTab] = useState<'actions' | 'tactics'>('actions');
   const [filter, setFilter] = useState<Filter>('all');
@@ -130,33 +160,12 @@ export default function Review({ s }: { s: GambitState }) {
   const fired = rows.filter((r) => r.outcome === 'fired');
   const totalLift = fired.reduce((a, r) => a + r.engagement_delta, 0);
 
-  const Tile = ({ k, label, set }: { k: Filter; label: string; set: Row[] }) => {
-    const on = filter === k;
-    const f = set.filter((r) => r.outcome === 'fired');
-    return (
-      <button onClick={() => setFilter(k)}
-        className="flex-1 rounded-lg border px-3 py-2 text-left transition-colors"
-        style={{
-          borderColor: on ? 'var(--kick-green)' : 'var(--border)',
-          background: on ? 'var(--bg-elevated)' : 'transparent',
-        }}>
-        <div className="text-[9px] font-bold tracking-[0.2em] text-[var(--text-muted)]">{label}</div>
-        <div className="flex items-baseline gap-1.5">
-          <span className="tnum text-lg font-bold text-[var(--kick-green)]">
-            {points(f.reduce((a, r) => a + r.engagement_delta, 0))}
-          </span>
-          <span className="text-[10px] text-[var(--text-muted)]">
-            {f.filter((r) => labelFor(r) === 'Worked').length}/{f.length} worked
-          </span>
-        </div>
-      </button>
-    );
-  };
-
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-[var(--bg-base)] p-6">
-      <div className="flex items-baseline gap-3">
-        <span className="tnum text-4xl font-bold leading-none text-[var(--kick-green)]">
+    // No height, background or padding of its own — the host owns those, so this
+    // renders correctly both as a full page and inside a panel.
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-2">
+        <span className="tnum text-3xl font-bold leading-none text-[var(--kick-green)]">
           {points(totalLift)}
         </span>
         <div>
@@ -168,7 +177,7 @@ export default function Review({ s }: { s: GambitState }) {
             {s.context?.viewer_count ? ` · ${s.context.viewer_count} viewers` : ''}
           </div>
         </div>
-        <div className="ml-auto flex gap-0.5 rounded-lg border border-[var(--border)] p-0.5">
+        <div className="ml-auto flex gap-0.5 rounded-sm border border-[var(--border)] p-0.5">
           {(['actions', 'tactics'] as const).map((k) => (
             <button key={k} onClick={() => setTab(k)}
               className={`rounded-md px-3 py-1.5 text-[12px] font-semibold capitalize ${
@@ -185,10 +194,12 @@ export default function Review({ s }: { s: GambitState }) {
       ) : (
         <>
           <div className="mt-4 flex gap-2">
-            <Tile k="all" label="EVERYTHING" set={s.results} />
+            <Tile k="all" label="EVERYTHING" set={s.results}
+              active={filter === 'all'} onSelect={setFilter} />
             {STATES.map((st) => (
               <Tile key={st} k={st} label={STATE_LABEL[st]}
-                set={s.results.filter((r) => r.state === st)} />
+                set={s.results.filter((r) => r.state === st)}
+                active={filter === st} onSelect={setFilter} />
             ))}
           </div>
 
@@ -215,7 +226,7 @@ export default function Review({ s }: { s: GambitState }) {
                     <span className="text-[11px] text-[var(--text-muted)]">— {blurb}</span>
                   </div>
 
-                  <div className="overflow-hidden rounded-lg border border-[var(--border)]">
+                  <div className="overflow-hidden rounded-sm border border-[var(--border)]">
                     {group.map((r, i) => (
                       <div key={r.action_id + i}
                         className="flex items-center gap-3 bg-[var(--bg-surface)] px-3 py-2.5"
@@ -270,7 +281,7 @@ export default function Review({ s }: { s: GambitState }) {
                       — the control every intervention is measured against · mean drift {points(drift)}
                     </span>
                   </div>
-                  <div className="overflow-hidden rounded-lg border border-dashed border-[var(--border)]">
+                  <div className="overflow-hidden rounded-sm border border-dashed border-[var(--border)]">
                     {ctrl.slice(0, 6).map((r, i) => (
                       <div key={r.action_id + i}
                         className="flex items-center gap-3 bg-[var(--bg-surface)] px-3 py-2 opacity-70"

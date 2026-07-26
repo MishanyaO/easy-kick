@@ -57,7 +57,7 @@ export default function App() {
     <div className="flex h-screen flex-col overflow-hidden bg-[var(--bg-base)]">
       {bar}
       {mode === 'review' ? (
-        <div className="min-h-0 flex-1"><Review s={s} /></div>
+        <div className="min-h-0 flex-1 p-6"><Review s={s} /></div>
       ) : (
         <div className="flex min-h-0 flex-1 gap-3 p-3">
           {/* the stream side: what the streamer is actually looking at, with our panel

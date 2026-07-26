@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ExternalLink, LineChart, MessageSquare } from 'lucide-react';
+import { ExternalLink, LineChart, ListFilter, MessageSquare } from 'lucide-react';
 import Nav from './Nav';
 import Sidebar from './Sidebar';
 import Panel, { PanelButton } from './Panel';
@@ -9,6 +9,7 @@ import StreamInfo from './StreamInfo';
 import ChannelActions from './ChannelActions';
 import ChatComposer from './ChatComposer';
 import IconRail from './IconRail';
+import ActivityFeed from './ActivityFeed';
 import LivePanel from '../components/LivePanel';
 import Review from '../components/Review';
 import Chat from '../components/Chat';
@@ -57,31 +58,40 @@ export default function KickDashboard() {
               <SessionInfo context={s.context} live={s.connected} />
             </div>
 
-            <div className="relative h-[400px] shrink-0">
+            {/* Aspect, not a fixed height — a short wide box crops the banner. */}
+            <div className="aspect-[16/9] max-h-[520px] shrink-0">
               <StreamPreview />
-              <div className="absolute right-5 top-16">
-                <LivePanel s={s} onDecide={s.decide} />
-              </div>
             </div>
 
-            <div className="min-h-[520px] flex-1">
+            {/* Kick puts Activity Feed and Mod Actions side by side under the
+                preview. Review takes the Mod Actions slot — same geometry, and
+                we have no moderation data to put there. */}
+            <div className="grid min-h-[420px] flex-1 grid-cols-2 gap-1">
+              <ActivityFeed s={s} />
               <Panel
-                title="Review"
+                title="Insights"
                 icon={<LineChart size={13} />}
                 className="h-full"
-                bodyClassName="flex flex-col px-3 pb-3"
+                bodyClassName="flex flex-col gap-4 overflow-y-auto px-3 py-2.5"
                 actions={
-                  <PanelButton label="Popout Review">
-                    <ExternalLink size={13} />
-                  </PanelButton>
+                  <>
+                    <PanelButton label="Filter Insights">
+                      <ListFilter size={13} />
+                    </PanelButton>
+                    <PanelButton label="Popout Insights">
+                      <ExternalLink size={13} />
+                    </PanelButton>
+                  </>
                 }
               >
+                <div className="shrink-0">
+                  <LivePanel s={s} onDecide={s.decide} docked />
+                </div>
                 <Review s={s} />
               </Panel>
             </div>
           </div>
 
-          {/* Column 2 — chat, full height, with Kick's composer pinned below */}
           <Panel
             title="Chat"
             icon={<MessageSquare size={13} />}

@@ -1,12 +1,7 @@
 import { ExternalLink, MonitorPlay } from 'lucide-react';
 import Panel, { PanelButton } from './Panel';
 
-/**
- * Kick's "Stream Preview" panel.
- *
- * There is no video source, so the offline banner fills the panel on its own.
- * `object-cover` because Kick's preview box is ~1.65:1 while the banner is 16:9.
- */
+/** Kick's "Stream Preview" panel. No video source, so the offline banner fills it. */
 export default function StreamPreview() {
   return (
     <Panel
@@ -20,8 +15,8 @@ export default function StreamPreview() {
         </PanelButton>
       }
     >
-      {/* Absolute fill rather than an aspect-ratio box: a 16:9 child is taller
-          than the row and, being centred, would overflow up across the header. */}
+      {/* Absolute fill: the body is the panel minus its header, so it is never
+          exactly 16:9 and a normal-flow image would overflow across the header. */}
       <img src="/offline-banner.webp" alt="" className="absolute inset-0 size-full object-cover" />
     </Panel>
   );

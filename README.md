@@ -19,8 +19,14 @@ Needs Node 18+, Python 3.11+, and [uv](https://docs.astral.sh/uv/).
 npm run dev:simulator
 ```
 
-Open [http://localhost:5173](http://localhost:5173) and hit **Start** in the amber bar. Chat replays from a canned
-dataset.
+Open [http://localhost:5173](http://localhost:5173) and hit **Start gym**. A simulated
+audience of 120 personas reacts to what the bot does, and the controller runs the real loop
+against it — nothing about the decisions or the measurement is faked.
+
+The app has two surfaces. **Live** is the panel a streamer parks over their OBS preview:
+it stays quiet until chat needs something, then offers one action to approve. **Review** is
+the ledger — every closed window grouped by outcome, plus a **Tactics** tab showing what the
+bandit has learned per chat state.
 
 ## Live mode — real Kick chat
 
@@ -50,5 +56,6 @@ in-memory, so repeat this step after a backend restart.
 `npm test` runs the backend suite. See [server/README.md](server/README.md) for endpoints,
 config, and the simulator API.
 
-**Note:** only the chat column is real — hype score, topics, and polls are still mocked in
-the browser.
+The loop is: read chat state → pick an intervention (or deliberately pick nothing) → wait
+60s → measure lift against comparable quiet windows → update the posterior. Design notes are
+in [notes/](notes/); the frontend decision record is in [.wayfinder/](.wayfinder/).

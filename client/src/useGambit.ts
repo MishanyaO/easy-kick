@@ -1,7 +1,7 @@
 // One SSE subscription, one reducer, one state object for both surfaces.
 import { useEffect, useReducer, useRef } from 'react';
 import type {
-  ActionFrame, BanditFrame, ChatFrame, ContextFrame, Frame, ResultFrame,
+  ActionFrame, BanditFrame, ChatFrame, ContextFrame, Frame, PollFrame, ResultFrame,
 } from './types';
 
 /** The bot's username in chat, live and in the gym. */
@@ -30,11 +30,13 @@ export type GambitState = {
   /** every closed window, newest first */
   results: (ResultFrame & { action?: ActionFrame })[];
   bandit: BanditFrame | null;
+  /** the poll currently taking votes, if the open window has one */
+  poll: PollFrame | null;
 };
 
 const EMPTY: GambitState = {
   connected: false, chat: [], context: null, spark: [], lastBot: null,
-  pending: null, inflight: {}, results: [], bandit: null,
+  pending: null, inflight: {}, results: [], bandit: null, poll: null,
 };
 
 type Msg =
@@ -81,6 +83,11 @@ function reduce(s: GambitState, m: Msg): GambitState {
         ? { ...s, inflight: { ...s.inflight, [f.id]: f } }
         : { ...s, pending: f };
 
+    // The running tally of the open poll. Republished every tick, so it is a replace,
+    // never an accumulate — the backend owns the dedupe and we must not re-add on top of it.
+    case 'poll':
+      return { ...s, poll: f };
+
     case 'result': {
       // A rail-forced no-op is NOT a decision (his §6): no posterior update, no lift, and
       // it must not appear in the ledger or it drowns the real windows.
@@ -95,6 +102,8 @@ function reduce(s: GambitState, m: Msg): GambitState {
         // a `nothing` decision closes a window too — keep it, it is a real trial
         results: [{ ...f, action }, ...s.results].slice(0, 200),
         pending: s.pending?.id === f.action_id ? null : s.pending,
+        // the window that owned the poll is closed; its final split lives on the result
+        poll: s.poll?.action_id === f.action_id ? null : s.poll,
       };
     }
 

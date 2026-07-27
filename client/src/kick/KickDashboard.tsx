@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ExternalLink, LineChart, ListFilter, MessageSquare } from 'lucide-react';
+import { ExternalLink, MessageSquare } from 'lucide-react';
 import Nav from './Nav';
 import Sidebar from './Sidebar';
 import Panel, { PanelButton } from './Panel';
@@ -10,8 +10,8 @@ import ChannelActions from './ChannelActions';
 import ChatComposer from './ChatComposer';
 import IconRail from './IconRail';
 import ActivityFeed from './ActivityFeed';
-import LivePanel from '../components/LivePanel';
-import Review from '../components/Review';
+import ModActions from './ModActions';
+import InsightsDrawer from './InsightsDrawer';
 import Chat from '../components/Chat';
 import { useGambit, gym } from '../useGambit';
 
@@ -22,10 +22,13 @@ import { useGambit, gym } from '../useGambit';
  * `--bg-surface` cards floating on a black page with 4px gutters, all measured
  * off the live dashboard.
  *
- * `LivePanel` sits over the stream preview rather than in a panel of its own —
- * the same placement App.tsx gives it, and the reason it exists: the streamer is
- * looking at the preview, not at us. Review, Session Info and Chat carry the
- * rest of the live data; Channel Actions and the rail are inert Kick chrome.
+ * Kick's own panels are reproduced as they ship, Mod Actions included. Our surface
+ * is the one thing that is *not* a Kick panel: `InsightsDrawer` floats over the
+ * whole dashboard, parked by the streamer over the preview, because the streamer is
+ * looking at the preview and not at us. Analytics and Tactics live one click away in
+ * the drawer's popout tab (`?insights`). Activity Feed, Session Info and Chat carry
+ * the rest of the live data; Mod Actions, Channel Actions and the rail are inert
+ * Kick chrome.
  */
 export default function KickDashboard() {
   const s = useGambit();
@@ -63,32 +66,11 @@ export default function KickDashboard() {
               <StreamPreview />
             </div>
 
-            {/* Kick puts Activity Feed and Mod Actions side by side under the
-                preview. Review takes the Mod Actions slot — same geometry, and
-                we have no moderation data to put there. */}
+            {/* Kick's own bottom row, restored: Activity Feed beside Mod Actions.
+                Insights no longer squats in the Mod Actions slot — it floats. */}
             <div className="grid min-h-[420px] flex-1 grid-cols-2 gap-1">
               <ActivityFeed s={s} />
-              <Panel
-                title="Insights"
-                icon={<LineChart size={13} />}
-                className="h-full"
-                bodyClassName="flex flex-col gap-4 overflow-y-auto px-3 py-2.5"
-                actions={
-                  <>
-                    <PanelButton label="Filter Insights">
-                      <ListFilter size={13} />
-                    </PanelButton>
-                    <PanelButton label="Popout Insights">
-                      <ExternalLink size={13} />
-                    </PanelButton>
-                  </>
-                }
-              >
-                <div className="shrink-0">
-                  <LivePanel s={s} onDecide={s.decide} docked />
-                </div>
-                <Review s={s} />
-              </Panel>
+              <ModActions />
             </div>
           </div>
 
@@ -132,6 +114,10 @@ export default function KickDashboard() {
           <IconRail />
         </div>
       </div>
+
+      {/* Ours, and the only thing on this screen that is: floating, user-parked,
+          above the whole dashboard rather than inside one of Kick's slots. */}
+      <InsightsDrawer s={s} />
     </div>
   );
 }

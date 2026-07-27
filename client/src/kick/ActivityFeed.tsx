@@ -1,4 +1,4 @@
-import { ExternalLink, ListFilter, Zap } from 'lucide-react';
+import { ExternalLink, Zap } from 'lucide-react';
 import Panel, { PanelButton } from './Panel';
 import { labelFor, points, isControl, VERDICT_COLOR, STATE_LABEL } from '../types';
 import type { GambitState } from '../useGambit';
@@ -55,14 +55,9 @@ export default function ActivityFeed({ s }: { s: GambitState }) {
       className="h-full"
       bodyClassName="overflow-y-auto"
       actions={
-        <>
-          <PanelButton label="Filter Activity Feed">
-            <ListFilter size={13} />
-          </PanelButton>
-          <PanelButton label="Popout Activity Feed">
-            <ExternalLink size={13} />
-          </PanelButton>
-        </>
+        <PanelButton label="Popout Activity Feed">
+          <ExternalLink size={13} />
+        </PanelButton>
       }
     >
       {empty ? (

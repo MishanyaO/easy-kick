@@ -1,9 +1,10 @@
 // Review mode — R7 on real data. Rows grouped by verdict, state tiles that summarise and
 // filter, and a Tactics tab reading the live bandit posteriors.
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
+import { FlaskConical, Radar } from 'lucide-react';
 import type { GambitState } from '../useGambit';
 import {
-  STATE_LABEL, VERDICT_COLOR, labelFor, isControl, points, pct,
+  STATE_LABEL, VERDICT_COLOR, labelFor, isControl, points, pct, whyUnattributable,
   type ChatState, type VerdictLabel, type ResultFrame, type ActionFrame,
 } from '../types';
 
@@ -20,18 +21,77 @@ const GROUPS: { verdict: VerdictLabel; blurb: string }[] = [
 const STATES: ChatState[] = ['lull', 'steady', 'spike'];
 const ARM_COLORS = ['var(--kick-green)', 'var(--warn)', 'var(--text-secondary)', '#6aa9ff', '#ff7ad9'];
 
+/**
+ * The empty state, which is a designed surface rather than an apology.
+ *
+ * Two jobs, and the second is the one that earns the space: say what will appear here, and
+ * explain the loop that will fill it. Second zero of a demo is spent on this screen, so
+ * "nothing yet" is a wasted first impression — the shape of the thing is interesting even
+ * before there is data in it.
+ */
+function Empty({ icon, kicker, title, blurb, steps }: {
+  icon: ReactNode;
+  kicker: string;
+  title: string;
+  blurb: string;
+  steps: [string, string][];
+}) {
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto py-6">
+      <div className="w-full max-w-[520px] rounded-sm border border-dashed border-[var(--border)] bg-[var(--bg-elevated)] p-6 text-center">
+        <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-[var(--bg-surface)] text-[var(--kick-green)]">
+          {icon}
+        </div>
+        <div className="mt-3 text-[10px] font-bold tracking-[0.2em] text-[var(--text-muted)]">
+          {kicker}
+        </div>
+        <h3 className="mt-1 text-[16px] font-semibold text-[var(--text-primary)]">{title}</h3>
+        <p className="mx-auto mt-1.5 max-w-[420px] text-[12px] leading-relaxed text-[var(--text-secondary)]">
+          {blurb}
+        </p>
+
+        <ol className="mt-5 space-y-2 text-left">
+          {steps.map(([step, why], i) => (
+            <li key={step} className="flex gap-3 rounded-sm bg-[var(--bg-surface)] px-3 py-2">
+              <span className="tnum mt-px shrink-0 text-[11px] font-bold text-[var(--kick-green)]">
+                {i + 1}
+              </span>
+              <span className="min-w-0">
+                <span className="text-[12px] font-medium text-[var(--text-primary)]">{step}</span>
+                <span className="block text-[11px] leading-snug text-[var(--text-muted)]">{why}</span>
+              </span>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </div>
+  );
+}
+
 function TacticsTab({ s }: { s: GambitState }) {
   const posteriors = s.bandit?.posteriors ?? [];
   if (!posteriors.length) {
     return (
-      <p className="mt-6 text-[12px] text-[var(--text-muted)]">
-        No decisions yet — the bandit publishes its table after the first one.
-      </p>
+      <Empty
+        icon={<FlaskConical size={18} />}
+        kicker="NOTHING LEARNED YET"
+        title="Three experiments, fifteen cells"
+        blurb="Every chat state runs its own experiment, and tactics are only ever compared within one — a spike always out-chats a lull, so ranking across states would measure the state, not the tactic."
+        steps={[
+          ['3 states × 5 tactics', 'lull, steady and spike, each holding a posterior per tactic'],
+          ['Silence is one of the five', 'the “nothing” tactic holds its own posterior, and every intervention pays a cost — quiet has to be beaten on evidence'],
+          ['The table appears after the first decision', 'run the gym to fill it in minutes instead of hours'],
+        ]}
+      />
     );
   }
   return (
-    // Stacked, not `xl:grid-cols-2`: that tracks the viewport, not the host panel's width.
-    <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
+    // Cards where there is room, one column where there is not — and keyed to the CONTAINER,
+    // not the viewport. That distinction is why this was flattened before: `xl:grid-cols-2`
+    // tracks the window, so a wide screen forced two columns into the 30%-wide dashboard
+    // panel. `@container` asks the host how much room it actually gave us.
+    <div className="@container min-h-0 flex-1 overflow-y-auto pr-1">
+      <div className="grid grid-cols-1 items-start gap-4 @3xl:grid-cols-2">
       {STATES.map((state) => {
         const arms = posteriors.filter((p) => p.state === state)
           .sort((a, b) => b.mean - a.mean);
@@ -119,6 +179,7 @@ function TacticsTab({ s }: { s: GambitState }) {
           on evidence, not assumed.
         </p>
       </section>
+      </div>
     </div>
   );
 }
@@ -191,6 +252,20 @@ export default function Review({ s }: { s: GambitState }) {
 
       {tab === 'tactics' ? (
         <div className="mt-4 flex min-h-0 flex-1 flex-col"><TacticsTab s={s} /></div>
+      ) : s.results.length === 0 ? (
+        // Before the filter tiles, not under them: four tiles of +0.0 pts read as a broken
+        // dashboard, where the same emptiness explained reads as a system waiting to run.
+        <Empty
+          icon={<Radar size={18} />}
+          kicker="NO CLOSED WINDOWS YET"
+          title="The ledger fills itself"
+          blurb="Every decision opens a 60-second window and lands here when it closes — including the decisions to stay quiet, which are the control everything else is measured against."
+          steps={[
+            ['Watch', 'participation is sampled continuously and classified lull / steady / spike'],
+            ['Act, or deliberately not', 'a tactic fires, or the “nothing” tactic wins — either way a window opens'],
+            ['Measure against a matched control', 'the lift is against comparable quiet windows, never just before-and-after'],
+          ]}
+        />
       ) : (
         <>
           <div className="mt-4 flex gap-2">
@@ -239,13 +314,29 @@ export default function Review({ s }: { s: GambitState }) {
                         <span className="w-28 shrink-0 truncate text-[11px] text-[var(--text-secondary)]">
                           {r.arm}
                         </span>
-                        <p className="min-w-0 flex-1 truncate text-[13px] text-[var(--text-primary)]">
-                          {r.action ? `“${r.action.body}”` : (
-                            <span className="italic text-[var(--text-muted)]">
-                              {r.arm === 'nothing' ? 'stayed quiet' : r.outcome}
-                            </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-[13px] text-[var(--text-primary)]">
+                            {r.action ? `“${r.action.body}”` : (
+                              <span className="italic text-[var(--text-muted)]">
+                                {r.arm === 'nothing' ? 'stayed quiet' : r.outcome}
+                              </span>
+                            )}
+                          </p>
+                          {/* Why, not just that: a `Can't tell` with no reason reads as a
+                              shrug, and the reason is the part that survives questioning. */}
+                          {whyUnattributable(r) && (
+                            <p className="truncate text-[10px] text-[var(--warn)]">
+                              {whyUnattributable(r)}
+                            </p>
                           )}
-                        </p>
+                        </div>
+                        {/* A poll's own outcome. Votes are the engagement signal for
+                            `chat_poll` — a lift number alone hides whether anyone answered. */}
+                        {Object.values(r.votes).some((n) => n > 0) && (
+                          <span className="tnum shrink-0 rounded-sm bg-[var(--bg-elevated)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)]">
+                            {Object.entries(r.votes).map(([k, n]) => `${k}:${n}`).join(' · ')}
+                          </span>
+                        )}
                         <span className="tnum w-[86px] shrink-0 text-right text-[15px] font-bold"
                           style={{ color: VERDICT_COLOR[labelFor(r)] }}>
                           {points(r.engagement_delta)}

@@ -47,6 +47,10 @@ class Outcome:
     reward: float  # [0, 1], what the posterior sees
     lift: float  # against the matched control — the one we ship
     lift_naive: float  # against the 60s before the fire — kept for the comparison
+    # Why this number cannot be attributed, in words a streamer can read — or None when it
+    # can. A verdict that cannot say "I don't know" will always say something wrong instead.
+    contaminated: str | None = None
+    controls: int = 0  # clean same-state windows the matched control averaged
 
 
 class RewardBook:
@@ -83,10 +87,28 @@ class RewardBook:
         raw = relative + BONUS_WEIGHT * after.rewards - (FIRE_COST if window.fired else 0.0)
 
         # Contaminated windows still count as decisions; they just cannot be controls.
+        controls = len(self._pool[window.state])
         if not window.fired and not window.contaminated:
             self._pool[window.state].append(moved)
 
-        return Outcome(reward=_logistic(raw / SCALE), lift=lift, lift_naive=moved)
+        return Outcome(reward=_logistic(raw / SCALE), lift=lift, lift_naive=moved,
+                       contaminated=self._unattributable(window, controls),
+                       controls=controls)
+
+    def _unattributable(self, window: Window, controls: int) -> str | None:
+        """Why this window's number cannot be read as an effect — in plain words, or None.
+
+        Both cases were already known here and neither left the backend, so the UI could
+        only ever report a confident verdict. That is the failure mode a technical judge
+        goes looking for: not a wrong number, but a number presented as if it were sound.
+        """
+        if window.contaminated:
+            return (f"another action fired less than {CONTAMINATION_S:.0f}s before this "
+                    "window opened, so chat was still responding to that one")
+        if controls == 0:
+            return (f"no quiet {window.state} windows recorded yet, so there is nothing to "
+                    "compare against — this is the before/after number, not a lift")
+        return None
 
     def _drift(self, state: ChatState) -> float:
         """How far chat moves over a window in this state anyway, with nobody intervening.

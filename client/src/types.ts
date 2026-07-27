@@ -11,11 +11,27 @@ export type ChatFrame = {
   id: string;
   ts: string;
   username: string;
+  /** The stable identity. Null when Kick omits it; `username` is display text, not a key. */
+  user_id: string | null;
   text: string;
   emotes: string[];
   is_sub: boolean;
   is_mod: boolean;
-  // contract v2 asks for user_id / sub_months / replies_to — not on the wire yet
+  // contract v2 asks for sub_months / replies_to — not on the wire yet
+};
+
+/** An open poll, republished every controller tick while its window is running. */
+export type PollFrame = {
+  type: 'poll';
+  ts: string;
+  action_id: string;
+  arm: Arm;
+  question: string;
+  options: string[];
+  votes: Record<string, number>;
+  /** Distinct viewers who voted — one ballot each, deduped server-side. */
+  voters: number;
+  closes_in_s: number;
 };
 
 export type ContextFrame = {
@@ -56,8 +72,12 @@ export type ResultFrame = {
   reward: number; // [0,1] after the logistic squash
   lift_naive: number; // the biased before/after estimator, kept for comparison
   lift_true?: number; // gym only — twin-world ground truth
+  /** Why this window cannot be read as an effect, in plain words. Null when it can. */
+  contaminated: string | null;
+  /** Clean same-state windows the matched control averaged. 0 means there was no control. */
+  controls: number;
   outcome: 'fired' | 'dismissed' | 'skipped' | 'railed';
-  // contract v2 asks for label / contaminated / replies / held_s / raiders — not yet
+  // contract v2 asks for label / replies / held_s / raiders — not yet
 };
 
 export type Posterior = {
@@ -81,7 +101,8 @@ export type BanditFrame = {
   };
 };
 
-export type Frame = ChatFrame | ContextFrame | ActionFrame | ResultFrame | BanditFrame;
+export type Frame =
+  | ChatFrame | ContextFrame | ActionFrame | ResultFrame | BanditFrame | PollFrame;
 
 /** UI vocabulary derived from his numbers — the backend does not send these. */
 export type VerdictLabel = 'Worked' | 'Neutral' | 'Backfired' | "Can't tell";
@@ -99,10 +120,18 @@ export const isControl = (r: ResultFrame) => r.arm === 'nothing';
 
 export function labelFor(r: ResultFrame): VerdictLabel {
   if (r.outcome === 'dismissed') return "Can't tell";
+  // The backend knows when a window is unattributable — a fire inside the 120s shadow, or
+  // no clean control to difference against. Reading a delta as a verdict anyway is how a
+  // system reports good news it has not earned.
+  if (r.contaminated) return "Can't tell";
   if (r.engagement_delta > NOISE_BAND) return 'Worked';
   if (r.engagement_delta < -NOISE_BAND) return 'Backfired';
   return 'Neutral';
 }
+
+/** The plain-words reason a verdict is `Can't tell`, or null. */
+export const whyUnattributable = (r: ResultFrame): string | null =>
+  r.contaminated ?? (r.outcome === 'dismissed' ? 'you skipped it, so nothing was sent' : null);
 
 export const VERDICT_COLOR: Record<VerdictLabel, string> = {
   Worked: 'var(--kick-green)',
@@ -110,6 +139,48 @@ export const VERDICT_COLOR: Record<VerdictLabel, string> = {
   Backfired: 'var(--danger)',
   "Can't tell": 'var(--warn)',
 };
+
+/**
+ * Why the bandit picked this arm, in a sentence.
+ *
+ * `propensity` — the number the card used to print — is the probability the sampler would
+ * have landed here again, which is meaningful to the algorithm and to nobody else. The
+ * interesting fact is *which move this is*: backing the leader, or spending a decision to
+ * learn something. Saying that out loud is what turns a hidden algorithm into a product
+ * idea a judge can argue with.
+ *
+ * Read entirely from frames the UI already has, so it degrades to null rather than lying
+ * when the bandit is unavailable (standing constraint 5: it never gates the live path).
+ */
+export function whyThisArm(
+  bandit: BanditFrame | null,
+  state: ChatState,
+  arm: Arm,
+): { mode: 'explore' | 'exploit'; text: string } | null {
+  const here = (bandit?.posteriors ?? []).filter((p) => p.state === state);
+  const mine = here.find((p) => p.arm === arm);
+  if (!mine) return null;
+
+  const tried = here.filter((p) => p.pulls > 0).sort((a, b) => b.mean - a.mean);
+  const leader = tried[0];
+
+  if (mine.pulls === 0) {
+    return { mode: 'explore', text: `first time trying ${arm} in a ${state}` };
+  }
+  if (leader && leader.arm === arm) {
+    return {
+      mode: 'exploit',
+      text: `${arm} leads in a ${state} — ${mine.mean.toFixed(2)} over ${mine.pulls} tries`,
+    };
+  }
+  if (leader) {
+    return {
+      mode: 'explore',
+      text: `trying ${arm} (${mine.pulls} tries) over ${leader.arm} (${leader.pulls}) — still learning`,
+    };
+  }
+  return { mode: 'explore', text: `no evidence in a ${state} yet — this is the first read` };
+}
 
 export const STATE_LABEL: Record<ChatState, string> = {
   lull: 'LULL',

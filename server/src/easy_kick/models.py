@@ -94,6 +94,9 @@ class ChatEventOut(BaseModel):
     id: str
     ts: str
     username: str
+    # The stable identity. `username` is display text and can be changed, so anything that
+    # counts people — unique chatters, one-vote-per-viewer — has to key on this.
+    user_id: str | None = None
     text: str
     emotes: list[str] = []
     is_sub: bool = False
@@ -105,10 +108,12 @@ class ChatEventOut(BaseModel):
         identity = sender.get("identity") or {}
         badges = {b.get("type") for b in identity.get("badges") or [] if isinstance(b, dict)}
         emotes = ev.payload.get("emotes") or []
+        user_id = sender.get("user_id")
         return cls(
             id=ev.payload.get("message_id") or ev.message_id,
             ts=ev.timestamp,
             username=sender.get("username") or "anonymous",
+            user_id=str(user_id) if user_id is not None else None,
             text=ev.payload.get("content") or "",
             emotes=[e.get("name", "") for e in emotes if isinstance(e, dict)],
             is_sub=bool(badges & {"subscriber", "founder"}),

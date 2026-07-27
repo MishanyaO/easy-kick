@@ -121,6 +121,13 @@ tickets, `/prototype` for the prototype tickets.
   tiles, expandable state-specific detail, and the bandit on its own Tactics tab leading
   with *what it would pick next* — **confirmed by the team 2026-07-26**. Surfaced four new
   contract fields: `replies`, `heldMin`, `votes[]`, `raiders`.
+- [009 — Where Insights lives inside the Kick dashboard replica](tickets/009-insights-in-the-kick-dashboard.md) —
+  Kick's **Mod Actions panel is restored** (the replica is only worth having if it is one),
+  and Insights moves out of that slot into a **floating, draggable drawer** — which restores
+  [004](tickets/004-screen-layout.md)'s call after PR #7 had quietly docked it. The drawer
+  holds live mode only; its header popout opens `?insights` in a new tab for Actions and
+  Tactics. Dead filter buttons removed from every panel.
+
 - [003 — Lock the event contract](tickets/003-event-contract.md) —
   **[the contract](assets/003-event-contract.md)**. Five events: `chat`, `metrics`,
   `state`, `suggestion`, `verdict`. `metrics` (dumb ~2s tick) and `state` (transition only)
@@ -172,9 +179,12 @@ tickets, `/prototype` for the prototype tickets.
 
 Frontier (open, unblocked, unclaimed) is computed by reading `tickets/`.
 
-| Ticket | Type | Blocked by |
-|---|---|---|
-| [001 — Confirm the Kick app's chat-write scope](tickets/001-kick-write-scope.md) | task | — |
-| [005 — Verdict semantics and thresholds](tickets/005-verdict-semantics.md) | grilling | — |
-| [006 — Vote capture and the poll card](tickets/006-vote-capture.md) | grilling | — |
-| [007 — Convergence chart and explore/exploit](tickets/007-experiment-surface.md) | prototype | 005 |
+Revised 2026-07-27 against the merged code — every open ticket was re-read against what
+PR #5 and PR #7 actually shipped, and three of the four shrank. What they still own:
+
+| Ticket | Type | Blocked by | Still owns, after the revision |
+|---|---|---|---|
+| [001 — Confirm the Kick app's chat-write scope](tickets/001-kick-write-scope.md) | task | — | **Unchanged, now the top of the list.** `KickAPI.post_chat` is written and waiting on a scope nobody has checked. The echo-back test rides along. |
+| [005 — Verdict semantics and thresholds](tickets/005-verdict-semantics.md) | grilling | — | **One question left: `NOISE_BAND`.** `contaminated` now ships with a plain-words reason, and it had a second cause nobody had named — an empty control pool, where `lift` silently equals `lift_naive`. |
+| [006 — Vote capture and the poll card](tickets/006-vote-capture.md) | grilling | — | **Done bar Q5.** One-vote-per-`user_id`, first-wins, forgiving-but-anchored matching, a live `controller.poll` tick, and a card that withholds percentages under 10 votes. Open: whether a poll verdict headlines votes over lift — needs real windows first. |
+| [007 — Convergence chart and explore/exploit](tickets/007-experiment-surface.md) | prototype | — | **Q3 shipped**: the card says EXPLORING / BACKING THE LEADER in words. Left: the convergence chart, which needs a posterior *series* the backend does not emit. |

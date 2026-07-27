@@ -62,7 +62,7 @@ def gym_fire(app, state: GymState):
     react to it. Live, the same callback posts through `chat:write`."""
     def fire(arm: Arm, chat_state, card) -> None:
         state.gym.say(card.body)
-        state.gym.fire(arm, chat_state)
+        state.gym.fire(arm, chat_state, card.options)
     return fire
 
 

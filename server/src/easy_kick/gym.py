@@ -81,6 +81,12 @@ class Persona:
     response_s: float = 60.0  # fixed at build time so `fire` consumes no randomness
     boost: float = 0.0
     boost_until: float = 0.0
+    # Which way this persona leans when asked, in [0,1). Fixed at build time: a lean drawn
+    # per poll would make every poll a coin flip, and a real chat has camps.
+    lean: float = 0.5
+    # The option they will type on their next message, while a poll is open on them.
+    ballot: str | None = None
+    ballot_until: float = 0.0
 
 
 def build_personas(rng: random.Random, count: int = PERSONAS) -> list[Persona]:
@@ -97,6 +103,7 @@ def build_personas(rng: random.Random, count: int = PERSONAS) -> list[Persona]:
             base_rate=arch.base_rate * rng.uniform(0.7, 1.3),
             theta=theta,
             response_s=rng.uniform(30.0, 90.0),
+            lean=rng.random(),
         ))
     return personas
 
@@ -134,18 +141,23 @@ class Gym:
             self._recover(persona, dt_s)
             rate = persona.base_rate * arc * max(0.0, 1.0 + persona.boost) / 60.0
             for _ in range(self._poisson(rate * dt_s)):
-                events.append(self._chat(persona.name, self._rng.choice(CHATTER)))
+                events.append(self._chat(persona.name, self._speak(persona)))
         events += self._incidental(arc, dt_s)
 
         for event in events:
             self._emit(event)
         return events
 
-    def fire(self, arm: Arm, state: ChatState) -> None:
+    def fire(self, arm: Arm, state: ChatState, options: list[str] | None = None) -> None:
         """The bot intervened. Personas respond for a while, then tire of that arm.
 
         A gain can be negative — mistimed, an intervention suppresses chat rather than
         merely failing to help. Exactly zero means this persona does not care either way.
+
+        `options` makes a poll answerable: a persona who responds to this arm types one of
+        them instead of chatter. The world still only fakes the *chat* — nothing here
+        touches the tally, the dedupe or the window, so a vote has to survive the same
+        parsing a live viewer's would.
         """
         for persona in self.personas:
             gain = persona.theta[state, arm] * persona.fatigue.get(arm, 1.0)
@@ -154,6 +166,21 @@ class Gym:
             persona.boost = gain
             persona.boost_until = self.t + persona.response_s
             persona.fatigue[arm] = persona.fatigue.get(arm, 1.0) * FATIGUE_PER_FIRE
+            # A negative gain means the prompt landed badly — those people do not answer it.
+            if options and gain > 0:
+                persona.ballot = options[min(int(persona.lean * len(options)), len(options) - 1)]
+                persona.ballot_until = self.t + persona.response_s
+
+    def _speak(self, persona: Persona) -> str:
+        """What this persona types next — their ballot if a poll is open on them, else noise.
+
+        The ballot is not cleared after use: a real chat has people who type `1` twice, and
+        the server's one-vote-per-viewer rule is exactly what has to absorb that.
+        """
+        if persona.ballot and self.t < persona.ballot_until:
+            return persona.ballot
+        persona.ballot = None
+        return self._rng.choice(CHATTER)
 
     def say(self, text: str) -> EventEnvelope:
         """The bot's own line, so it shows up in chat like any other message."""
@@ -302,7 +329,7 @@ def simulate(*, seed: int, decisions: int, policy: str = "gambit", truth: bool =
         nonlocal pending_truth
         pending_truth = gym.true_effect(arm, state) if truth else None
         gym.say(card.body)
-        gym.fire(arm, state)
+        gym.fire(arm, state, card.options)
 
     controller = Controller(monitor=monitor, bandit=brain, rewards=RewardBook(monitor),
                         context=context, store=store, publish=publish, perform=fire)
@@ -333,8 +360,11 @@ def simulate(*, seed: int, decisions: int, policy: str = "gambit", truth: bool =
 
 
 def _user(username: str) -> dict:
+    # Derived from the name the same way the simulator route does it, so gym traffic carries
+    # the identity anything counting people keys on — unique chatters, one-vote-per-viewer.
+    user_id = uuid.uuid5(uuid.NAMESPACE_URL, f"kick.com/{username}").int % 2_000_000_000
     return {"is_anonymous": False, "username": username, "channel_slug": username.lower(),
-            "identity": {"badges": []}}
+            "user_id": user_id, "identity": {"badges": []}}
 
 
 def _iso(moment: float) -> str:

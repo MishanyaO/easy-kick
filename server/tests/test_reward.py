@@ -113,3 +113,38 @@ def test_nothing_windows_carry_no_fire_cost():
     assert doing_nothing.lift == intervening.lift
     assert doing_nothing.reward > intervening.reward
     assert doing_nothing.reward == pytest.approx(0.5, abs=0.01)
+
+
+def test_a_contaminated_window_says_why_it_cannot_be_attributed():
+    monitor = StubMonitor()
+    book = RewardBook(monitor)
+    book.note_fire(1000)
+
+    _, outcome = close_window(book, monitor, 1000 + CONTAMINATION_S - 10, Arm.NOTHING,
+                              before=0.30, after=0.30)
+
+    assert outcome.contaminated and "still responding" in outcome.contaminated
+
+
+def test_the_first_window_of_a_state_admits_it_has_no_control_to_compare_against():
+    """Until a clean window exists, `lift` IS `lift_naive` — the biased estimator wearing
+    the matched label. Saying so is the difference between honest and merely confident."""
+    monitor = StubMonitor()
+    book = RewardBook(monitor)
+
+    _, first = close_window(book, monitor, 1000, Arm.EMOTE_RALLY, before=0.10, after=0.20)
+
+    assert first.controls == 0
+    assert first.contaminated and "nothing to compare against" in first.contaminated
+    assert first.lift == pytest.approx(first.lift_naive)
+
+
+def test_a_window_with_a_real_control_behind_it_is_attributable():
+    monitor = StubMonitor()
+    book = RewardBook(monitor)
+    close_window(book, monitor, 1000, Arm.NOTHING, before=0.20, after=0.24)  # a clean control
+
+    _, outcome = close_window(book, monitor, 9000, Arm.EMOTE_RALLY, before=0.10, after=0.25)
+
+    assert outcome.controls == 1
+    assert outcome.contaminated is None

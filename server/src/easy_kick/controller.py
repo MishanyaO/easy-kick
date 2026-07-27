@@ -104,6 +104,10 @@ class Controller:
         metrics = self._monitor.measure(now)
         state = self._monitor.classify(metrics)
         self._publish("controller.context", self._context.frame(now, metrics.participation))
+        # Only once the prompt is actually in chat: a card still waiting for the streamer's
+        # approval has asked nobody anything, so anything typed meanwhile is not a ballot.
+        if self._window and self._window.fired and self._card and self._card.options:
+            self._publish("controller.poll", self._poll_frame(self._window, self._card, now))
 
         if not self.enabled or self._window or self._railed(now):
             return
@@ -227,18 +231,58 @@ class Controller:
 
     def _votes(self, window: Window, card: Card | None) -> dict[str, int]:
         """A real poll without a poll API: the bot asked, chat replied, we count."""
+        return self._ballots(window, card)[0]
+
+    def _ballots(self, window: Window, card: Card | None) -> tuple[dict[str, int], int]:
+        """The tally, and how many viewers cast a ballot.
+
+        One viewer, one vote. Without this a single person typing `1` twenty times owns the
+        poll — the mechanism that makes a chat poll cheap is the same one that makes it
+        trivial to stuff, and the count is the thing a verdict is read off.
+
+        First vote wins. Chat is a conversation: `2 ... actually no, 1` is a person arguing,
+        not revising a ballot, and last-wins hands the poll to whoever talks most. Iteration
+        runs newest-first, so the earliest ballot is the one that survives the overwrite.
+        """
         if not card or not card.options:
-            return {}
-        tally = dict.fromkeys(card.options, 0)
+            return {}, 0
+        lookup = {_normalise(option): option for option in card.options}
+        ballots: dict[str, str] = {}
         for ev in self._store.iter_recent():
             ts = ev.epoch()
             if ts is not None and ts < window.opened_at:
                 break
-            if ev.type == EventType.CHAT_MESSAGE_SENT:
-                text = (ev.payload.get("content") or "").strip()
-                if text in tally:
-                    tally[text] += 1
-        return tally
+            # `==`, not `is`: EventEnvelope.type is a plain str, so identity never matches.
+            if ev.type != EventType.CHAT_MESSAGE_SENT:
+                continue
+            choice = _vote_for(ev.payload.get("content") or "", lookup)
+            if choice is None or (voter := _voter(ev)) is None:
+                continue
+            ballots[voter] = choice
+        tally = dict.fromkeys(card.options, 0)
+        for choice in ballots.values():
+            tally[choice] += 1
+        return tally, len(ballots)
+
+    def _poll_frame(self, window: Window, card: Card, now: float) -> dict:
+        """The open poll, published every tick.
+
+        Votes used to exist only on the closed `result`, so the card was blind for the whole
+        window — the one moment a viewer is actually doing something is the one moment the
+        streamer could not see it.
+        """
+        tally, voters = self._ballots(window, card)
+        return {
+            "type": "poll",
+            "ts": _iso(now),
+            "action_id": window.id,
+            "arm": window.arm,
+            "question": card.body,
+            "options": list(card.options),
+            "votes": tally,
+            "voters": voters,
+            "closes_in_s": max(0.0, round(window.closes_at - now, 1)),
+        }
 
 
 def insights(bandit) -> list[str]:
@@ -316,8 +360,41 @@ def _result(window: Window, outcome: Outcome | None, status: str,
         "engagement_delta": outcome.lift if outcome else 0.0,
         "reward": outcome.reward if outcome else 0.0,
         "lift_naive": outcome.lift_naive if outcome else 0.0,
+        # Null when the window is attributable; a plain-words reason when it is not.
+        "contaminated": outcome.contaminated if outcome else None,
+        "controls": outcome.controls if outcome else 0,
         "outcome": status,
     }
+
+
+def _normalise(text: str) -> str:
+    """Vote text reduced to what the viewer meant: case, spacing and punctuation dropped."""
+    return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
+def _vote_for(text: str, lookup: dict[str, str]) -> str | None:
+    """Which option this message votes for, or None.
+
+    `1`, `!1`, `1)`, ` 1 ` and `1 yes` all vote for `1`. Exact-string matching counted none
+    of those, so a poll could read zero while chat was visibly answering it. `is 1 better?`
+    still counts for nothing — the option has to lead the message, or every mention of a
+    number becomes a ballot.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return None
+    if (whole := _normalise(stripped)) in lookup:
+        return lookup[whole]
+    return lookup.get(_normalise(stripped.split(maxsplit=1)[0]))
+
+
+def _voter(ev: EventEnvelope) -> str | None:
+    """The identity a ballot is keyed on — `user_id` where Kick sends it, else the name."""
+    sender = ev.payload.get("sender") or {}
+    if (user_id := sender.get("user_id")) is not None:
+        return f"id:{user_id}"
+    username = sender.get("username")
+    return f"name:{username}" if username else None
 
 
 def _arm_mean(bandit, arm: Arm) -> float:

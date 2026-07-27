@@ -109,3 +109,31 @@ def _run(gym: Gym, duration_s: float):
     for _ in range(int(duration_s / 5)):
         events += gym.step(5.0)
     return events
+
+
+def test_a_poll_gets_answered_by_the_people_it_reaches():
+    """The world fakes the chat, never the counting: personas type an option, and the
+    controller's own parser has to find the votes in the message stream."""
+    gym = Gym(seed=5)
+    gym.run(120.0)  # let the audience warm up
+
+    gym.fire(Arm.CHAT_POLL, ChatState.LULL, ["1", "2"])
+    said = []
+    for _ in range(12):
+        said += [e.payload["content"] for e in gym.step(5.0)
+                 if e.type == EventType.CHAT_MESSAGE_SENT]
+
+    ballots = [text for text in said if text in {"1", "2"}]
+    assert ballots, "nobody answered the poll"
+    assert set(ballots) == {"1", "2"}, "a real chat splits; this world only picked one side"
+
+
+def test_an_arm_with_no_options_leaves_chat_talking_normally():
+    gym = Gym(seed=5)
+    gym.run(120.0)
+
+    gym.fire(Arm.EMOTE_RALLY, ChatState.LULL)
+    said = [e.payload["content"] for _ in range(6) for e in gym.step(5.0)
+            if e.type == EventType.CHAT_MESSAGE_SENT]
+
+    assert said and not [t for t in said if t in {"1", "2"}]

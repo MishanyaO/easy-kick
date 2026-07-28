@@ -191,11 +191,11 @@ def test_a_poll_is_tallied_from_what_chat_actually_typed():
     controller, _, _, store, frames, _ = build(arm=Arm.CHAT_POLL)
 
     controller.tick(1000)
-    for i, vote in enumerate(["1", "2", "1", "1", "banana"]):
+    for i, vote in enumerate(["yes", "no", "yes", "yes", "banana"]):
         store.add(chat(f"voter{i}", 1010 + i, vote))
     controller.tick(1000 + WINDOW_S)
 
-    assert results(frames)[0]["votes"] == {"1": 3, "2": 1}
+    assert results(frames)[0]["votes"] == {"yes": 3, "no": 1}
 
 
 def test_one_viewer_gets_one_vote_however_many_times_they_type_it():
@@ -203,45 +203,45 @@ def test_one_viewer_gets_one_vote_however_many_times_they_type_it():
 
     controller.tick(1000)
     for i in range(20):  # a single viewer trying to own the poll
-        store.add(chat("spammer", 1010 + i, "1"))
-    store.add(chat("someone_else", 1040, "2"))
+        store.add(chat("spammer", 1010 + i, "yes"))
+    store.add(chat("someone_else", 1040, "no"))
     controller.tick(1000 + WINDOW_S)
 
-    assert results(frames)[0]["votes"] == {"1": 1, "2": 1}
+    assert results(frames)[0]["votes"] == {"yes": 1, "no": 1}
 
 
 def test_a_repeat_voter_is_held_to_their_first_answer():
     controller, _, _, store, frames, _ = build(arm=Arm.CHAT_POLL)
 
     controller.tick(1000)
-    store.add(chat("undecided", 1010, "1"))
-    store.add(chat("undecided", 1020, "2"))
+    store.add(chat("undecided", 1010, "yes"))
+    store.add(chat("undecided", 1020, "no"))
     controller.tick(1000 + WINDOW_S)
 
-    assert results(frames)[0]["votes"] == {"1": 1, "2": 0}
+    assert results(frames)[0]["votes"] == {"yes": 1, "no": 0}
 
 
 def test_votes_survive_the_punctuation_real_chat_types():
     controller, _, _, store, frames, _ = build(arm=Arm.CHAT_POLL)
 
     controller.tick(1000)
-    for i, vote in enumerate(["!1", "1)", " 1 ", "1 yes obviously", "2!"]):
+    for i, vote in enumerate(["!yes", "yes)", " yes ", "yes obviously", "no!"]):
         store.add(chat(f"voter{i}", 1010 + i, vote))
-    store.add(chat("bystander", 1020, "is 1 better than 2?"))  # a question, not a ballot
+    store.add(chat("bystander", 1020, "is yes better than no?"))  # a question, not a ballot
     controller.tick(1000 + WINDOW_S)
 
-    assert results(frames)[0]["votes"] == {"1": 4, "2": 1}
+    assert results(frames)[0]["votes"] == {"yes": 4, "no": 1}
 
 
 def test_an_open_poll_publishes_its_running_tally_every_tick():
     controller, _, _, store, frames, _ = build(arm=Arm.CHAT_POLL)
 
     controller.tick(1000)
-    store.add(chat("early_bird", 1005, "1"))
+    store.add(chat("early_bird", 1005, "yes"))
     controller.tick(1010)
 
     polls = [p for t, p in frames if t == "controller.poll"]
-    assert polls and polls[-1]["votes"] == {"1": 1, "2": 0}
+    assert polls and polls[-1]["votes"] == {"yes": 1, "no": 0}
     assert polls[-1]["voters"] == 1
     assert polls[-1]["closes_in_s"] == WINDOW_S - 10
 
@@ -250,7 +250,7 @@ def test_a_card_still_awaiting_approval_publishes_no_poll():
     controller, _, _, store, frames, _ = build(arm=Arm.CHAT_POLL, autonomy=Autonomy.ASK)
 
     controller.tick(1000)  # suggested, not sent — chat has been asked nothing
-    store.add(chat("keen", 1005, "1"))
+    store.add(chat("keen", 1005, "yes"))
     controller.tick(1010)
 
     assert not [p for t, p in frames if t == "controller.poll"]
@@ -269,11 +269,11 @@ def test_quiz_answers_are_tallied_like_a_poll():
     controller, _, _, store, frames, _ = build(arm=Arm.QUIZ)
 
     controller.tick(1000)
-    for i, vote in enumerate(["1", "2", "1"]):
+    for i, vote in enumerate(["buff", "debuff", "buff"]):
         store.add(chat(f"voter{i}", 1010 + i, vote))
     controller.tick(1000 + WINDOW_S)
 
-    assert results(frames)[0]["votes"] == {"1": 2, "2": 1}
+    assert results(frames)[0]["votes"] == {"buff": 2, "debuff": 1}
 
 
 def test_a_buried_question_fires_a_digest_card_without_posting_or_scoring():

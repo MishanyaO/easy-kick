@@ -20,7 +20,15 @@ from .bandit import MIN_PULLS, Decision
 from .context import StreamContext
 from .engagement import BOT_NAME, EngagementMonitor
 from .hub import EventHub
-from .models import BANDIT_ARMS, Arm, Autonomy, ChatState, EventEnvelope, EventType, Mode
+from .models import (
+    BANDIT_ARMS,
+    Arm,
+    Autonomy,
+    ChatState,
+    EventEnvelope,
+    EventType,
+    Mode,
+)
 from .reward import Outcome, RewardBook, Window
 from .store import EventStore
 
@@ -55,9 +63,13 @@ class Card:
 TEMPLATES = {
     Arm.EMOTE_RALLY: Card("Emote rally", "drop a 🔥 if you saw that", []),
     Arm.CHAT_POLL: Card("Chat poll", "was that a good call?", ["yes", "no"]),
-    Arm.QUIZ: Card("Quiz", "quick one: is that a buff or a debuff?", ["buff", "debuff"]),
+    Arm.QUIZ: Card(
+        "Quiz", "quick one: is that a buff or a debuff?", ["buff", "debuff"]
+    ),
     Arm.PREDICTION: Card("Prediction", "/prediction Do they clutch it? | yes | no", []),
-    Arm.CHAT_DIGEST: Card("Chat digest", "a question worth answering is getting buried", []),
+    Arm.CHAT_DIGEST: Card(
+        "Chat digest", "a question worth answering is getting buried", []
+    ),
 }
 
 
@@ -68,10 +80,17 @@ def compose(arm: Arm) -> Card:
 
 
 class Controller:
-    def __init__(self, *, monitor: EngagementMonitor, bandit, rewards: RewardBook,
-                 context: StreamContext, store: EventStore,
-                 publish: Callable[[str, dict], None],
-                 perform: Callable[[Arm, ChatState, Card], None] | None = None):
+    def __init__(
+        self,
+        *,
+        monitor: EngagementMonitor,
+        bandit,
+        rewards: RewardBook,
+        context: StreamContext,
+        store: EventStore,
+        publish: Callable[[str, dict], None],
+        perform: Callable[[Arm, ChatState, Card], None] | None = None,
+    ):
         self._monitor = monitor
         self._bandit = bandit
         self._rewards = rewards
@@ -102,22 +121,32 @@ class Controller:
         self._close_due(now)
         metrics = self._monitor.measure(now)
         state = self._monitor.classify(metrics)
-        self._publish("controller.context",
-                      self._context.frame(now, metrics.participation, metrics.unique_chatters,
-                                          metrics.msgs_per_min))
+        self._publish(
+            "controller.context",
+            self._context.frame(
+                now,
+                metrics.participation,
+                metrics.unique_chatters,
+                metrics.msgs_per_min,
+            ),
+        )
         # Only once the prompt is actually in chat: a card still waiting for the streamer's
         # approval has asked nobody anything, so anything typed meanwhile is not a ballot.
         if self._window and self._window.fired and self._card and self._card.options:
-            self._publish("controller.poll", self._poll_frame(self._window, self._card, now))
+            self._publish(
+                "controller.poll", self._poll_frame(self._window, self._card, now)
+            )
 
         if not self.enabled or self._window or self._railed(now):
             return
         # Bandit-adjacent: `chat_digest` never touches chat and is never scored, so it isn't
         # one of the arms Thompson sampling competes over — but it still shares the cooldown
         # and hourly cap, so it can't collide with a fired arm's window.
-        if (self.autonomy.get(Arm.CHAT_DIGEST) is not Autonomy.OFF
-                and not self._capped(Arm.CHAT_DIGEST, now)
-                and (highlight := _buried_highlight(self._store))):
+        if (
+            self.autonomy.get(Arm.CHAT_DIGEST) is not Autonomy.OFF
+            and not self._capped(Arm.CHAT_DIGEST, now)
+            and (highlight := _buried_highlight(self._store))
+        ):
             self._fire_digest(highlight, now)
             return
         if self.mode is Mode.MANUAL:
@@ -130,13 +159,17 @@ class Controller:
             # tick, not the loop.
             logger.warning("bandit.select failed; skipping tick", exc_info=True)
             return
-        if self.autonomy[decision.arm] is Autonomy.OFF or self._capped(decision.arm, now):
+        if self.autonomy[decision.arm] is Autonomy.OFF or self._capped(
+            decision.arm, now
+        ):
             return  # rail, not a decision
         self._act(decision, metrics, now)
 
     def approve(self, action_id: str, now: float) -> bool:
         """Streamer sent a suggested card. The arm fires now and the window runs on."""
-        if not (self._awaiting_approval and self._window and self._window.id == action_id):
+        if not (
+            self._awaiting_approval and self._window and self._window.id == action_id
+        ):
             return False
         self._awaiting_approval = False
         self.approvals[self._window.arm] += 1
@@ -151,7 +184,9 @@ class Controller:
         it — the arm never fired. Folding it into the arm's posterior is missing-not-at-
         random, so it goes to a separate counter and the window is voided.
         """
-        if not (self._awaiting_approval and self._window and self._window.id == action_id):
+        if not (
+            self._awaiting_approval and self._window and self._window.id == action_id
+        ):
             return False
         window = self._window
         self._window, self._card, self._awaiting_approval = None, None, False
@@ -167,7 +202,9 @@ class Controller:
             "fire_rate": dict(self.fire_rate),
             "autonomy": dict(self.autonomy),
             "approvals": dict(self.approvals),
-            "vetoes": [{"state": s, "arm": a, "count": n} for (s, a), n in self.vetoes.items()],
+            "vetoes": [
+                {"state": s, "arm": a, "count": n} for (s, a), n in self.vetoes.items()
+            ],
             "promotions": self.promotions(),
             "insights": insights(self._bandit),
             **self._bandit.snapshot(),
@@ -176,7 +213,8 @@ class Controller:
     def promotions(self) -> list[str]:
         """Arms the trust ratchet is ready to offer to promote out of `ask`."""
         return [
-            arm for arm, mode in self.autonomy.items()
+            arm
+            for arm, mode in self.autonomy.items()
             if mode is Autonomy.ASK
             and arm is not Arm.PREDICTION  # never promoted: it spends viewers' points
             and self.approvals[arm] >= PROMOTE_AFTER_APPROVALS
@@ -186,16 +224,20 @@ class Controller:
     # --- internals -----------------------------------------------------------------
 
     def _railed(self, now: float) -> bool:
-        return (self._context.speaking
-                or self._context.in_transition(now)
-                or (self._fires and now - self._fires[-1][0] < COOLDOWN_S))
+        return (
+            self._context.speaking
+            or self._context.in_transition(now)
+            or (self._fires and now - self._fires[-1][0] < COOLDOWN_S)
+        )
 
     def _capped(self, arm: Arm, now: float) -> bool:
         while self._fires and now - self._fires[0][0] > 3600:
             self._fires.popleft()
         return sum(a == arm for _, a in self._fires) >= ARM_CAP_PER_HOUR
 
-    def _act(self, decision: Decision, metrics, now: float, *, manual: bool = False) -> None:
+    def _act(
+        self, decision: Decision, metrics, now: float, *, manual: bool = False
+    ) -> None:
         arm, state = decision.arm, decision.state
         window_id = uuid.uuid4().hex[:12]
         autonomy = self.autonomy[arm]
@@ -209,15 +251,23 @@ class Controller:
         if fires_now:
             self._do_fire(arm, state, self._card, now)
         if self._card:
-            self._publish("controller.action",
-                          _action(window_id, decision, self._card, metrics, now, autonomy))
+            self._publish(
+                "controller.action",
+                _action(window_id, decision, self._card, metrics, now, autonomy),
+            )
 
         self._window = self._rewards.open(window_id, state, arm, now, fired=fires_now)
         if manual:
             self._manual_windows.add(window_id)
-        self._publish("controller.bandit",
-                      {**self._bandit.snapshot(), "type": "bandit", "ts": _iso(now),
-                       "last_decision": decision.frame()})
+        self._publish(
+            "controller.bandit",
+            {
+                **self._bandit.snapshot(),
+                "type": "bandit",
+                "ts": _iso(now),
+                "last_decision": decision.frame(),
+            },
+        )
 
     def _fire_chance(self, arm: Arm) -> float:
         """Slider rate (fires/minute) turned into a per-tick firing probability."""
@@ -227,23 +277,30 @@ class Controller:
         """Sliders decide, not the bandit — `bandit.select()` is never called here, and the
         window this opens is flagged so its close never updates a posterior."""
         eligible = [
-            arm for arm in BANDIT_ARMS if arm is not Arm.NOTHING
-            and self.autonomy[arm] is not Autonomy.OFF and not self._capped(arm, now)
+            arm
+            for arm in BANDIT_ARMS
+            if arm is not Arm.NOTHING
+            and self.autonomy[arm] is not Autonomy.OFF
+            and not self._capped(arm, now)
             and random.random() < self._fire_chance(arm)
         ]
         if not eligible:
             return
         arm = random.choice(eligible)
-        self._act(Decision(state, arm, {}, self._fire_chance(arm)), metrics, now, manual=True)
+        self._act(
+            Decision(state, arm, {}, self._fire_chance(arm)), metrics, now, manual=True
+        )
 
     def _fire_digest(self, highlight: tuple[str, str], now: float) -> None:
         """Card-only: never calls `perform`, never opens a scored window."""
         self._fires.append((now, Arm.CHAT_DIGEST))
         who, text = highlight
-        card = Card("Chat digest", f"@{who} asked, and it's still buried: {text}", [])
+        card = Card("Chat digest", f"@{who}: {text}", [])
         self._publish("controller.digest", _digest(card, highlight, now))
 
-    def _do_fire(self, arm: Arm, state: ChatState, card: Card | None, now: float) -> None:
+    def _do_fire(
+        self, arm: Arm, state: ChatState, card: Card | None, now: float
+    ) -> None:
         self._fires.append((now, arm))
         self._rewards.note_fire(now)
         if self.perform and card:
@@ -266,11 +323,19 @@ class Controller:
         outcome = self._rewards.close(window, now)
         if not manual:
             self._bandit.update(window.state, window.arm, outcome.reward)
-        self._publish("controller.result",
-                      _result(window, outcome, "fired" if window.fired else "skipped",
-                              self._votes(window, card)))
-        self._publish("controller.bandit",
-                      {**self._bandit.snapshot(), "type": "bandit", "ts": _iso(now)})
+        self._publish(
+            "controller.result",
+            _result(
+                window,
+                outcome,
+                "fired" if window.fired else "skipped",
+                self._votes(window, card),
+            ),
+        )
+        self._publish(
+            "controller.bandit",
+            {**self._bandit.snapshot(), "type": "bandit", "ts": _iso(now)},
+        )
 
     def _votes(self, window: Window, card: Card | None) -> dict[str, int]:
         """A real poll without a poll API: the bot asked, chat replied, we count."""
@@ -337,11 +402,19 @@ def insights(bandit) -> list[str]:
     if not getattr(bandit, "cells", None):
         return []
     lines = []
-    means = {arm: _arm_mean(bandit, arm) for arm in bandit.arms if arm is not Arm.NOTHING}
+    means = {
+        arm: _arm_mean(bandit, arm) for arm in bandit.arms if arm is not Arm.NOTHING
+    }
     ranked = sorted(means.items(), key=lambda kv: -kv[1])
-    if len(ranked) >= 2 and ranked[1][1] > 0 and _evidence(bandit) >= MIN_PULLS * len(ranked):
-        lines.append(f"In this channel, {ranked[0][0]} beats {ranked[1][0]} "
-                     f"{ranked[0][1] / ranked[1][1]:.1f}×.")
+    if (
+        len(ranked) >= 2
+        and ranked[1][1] > 0
+        and _evidence(bandit) >= MIN_PULLS * len(ranked)
+    ):
+        lines.append(
+            f"In this channel, {ranked[0][0]} beats {ranked[1][0]} "
+            f"{ranked[0][1] / ranked[1][1]:.1f}×."
+        )
     for state in ChatState:
         cells = {arm: bandit.cells[state, arm] for arm in bandit.arms}
         if sum(c.pulls for c in cells.values()) >= MIN_PULLS * len(cells):
@@ -356,9 +429,18 @@ def hub_publisher(hub: EventHub) -> Callable[[str, dict], None]:
     They are published, never stored: `engagement.py` reads the store, and our own output
     is not chat.
     """
+
     def publish(event_type: str, payload: dict) -> None:
-        hub.publish(EventEnvelope(type=event_type, version="1", message_id=uuid.uuid4().hex,
-                                  timestamp=_iso(time.time()), payload=payload))
+        hub.publish(
+            EventEnvelope(
+                type=event_type,
+                version="1",
+                message_id=uuid.uuid4().hex,
+                timestamp=_iso(time.time()),
+                payload=payload,
+            )
+        )
+
     return publish
 
 
@@ -372,8 +454,14 @@ async def run(controller: Controller, tick_s: float = TICK_S) -> None:
             logger.exception("controller tick failed")
 
 
-def _action(window_id: str, decision: Decision, card: Card, metrics, now: float,
-            autonomy: Autonomy) -> dict:
+def _action(
+    window_id: str,
+    decision: Decision,
+    card: Card,
+    metrics,
+    now: float,
+    autonomy: Autonomy,
+) -> dict:
     return {
         "type": "action",
         "id": window_id,
@@ -404,8 +492,12 @@ def _digest(card: Card, highlight: tuple[str, str], now: float) -> dict:
     }
 
 
-def _result(window: Window, outcome: Outcome | None, status: str,
-            votes: dict[str, int] | None = None) -> dict:
+def _result(
+    window: Window,
+    outcome: Outcome | None,
+    status: str,
+    votes: dict[str, int] | None = None,
+) -> dict:
     return {
         "type": "result",
         "action_id": window.id,
@@ -488,4 +580,8 @@ def _buried_highlight(store: EventStore) -> tuple[str, str] | None:
 
 
 def _iso(moment: float) -> str:
-    return datetime.fromtimestamp(moment, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.fromtimestamp(moment, tz=timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )

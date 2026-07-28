@@ -45,7 +45,7 @@ FATIGUE_PER_FIRE = 0.6  # the fourth emote rally in an hour lands worse than the
 FATIGUE_RECOVERY_S = 1800.0
 
 CHATTER = ("nice", "lets go", "🔥", "no way", "gg", "how did he do that?", "first time here",
-           "that was clean", "🚀🚀", "what happened?", "lmao", "insane")
+           "that was clean", "🚀🚀", "wait what did I miss?", "lmao", "insane")
 
 
 @dataclass(frozen=True)

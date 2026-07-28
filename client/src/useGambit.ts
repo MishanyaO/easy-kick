@@ -1,7 +1,7 @@
 // One SSE subscription, one reducer, one state object for both surfaces.
 import { useEffect, useReducer, useRef } from 'react';
 import type {
-  ActionFrame, BanditFrame, ChatFrame, ContextFrame, Frame, PollFrame, ResultFrame,
+  ActionFrame, BanditFrame, ChatFrame, ContextFrame, DigestFrame, Frame, PollFrame, ResultFrame,
 } from './types';
 
 /** The bot's username in chat, live and in the gym. */
@@ -19,6 +19,12 @@ export type GambitState = {
   context: ContextFrame | null;
   /** participation over time, for the ambient sparkline */
   spark: number[];
+  /** viewer count over time */
+  viewerSpark: number[];
+  /** msgs/min over time — the "engagement" graph */
+  engagementSpark: number[];
+  /** unique chatters over time — "unique engaging viewers" */
+  chattersSpark: number[];
   /** our own most recent chat line. Held OUTSIDE the chat window on purpose: the window
    *  turns over in seconds, and Kick has no pinned messages, so deriving this from the
    *  visible messages means the proof of the ACT step vanishes almost immediately. */
@@ -32,11 +38,14 @@ export type GambitState = {
   bandit: BanditFrame | null;
   /** the poll currently taking votes, if the open window has one */
   poll: PollFrame | null;
+  /** the most recent chat_digest card, if any — never posted to chat, never scored */
+  digest: DigestFrame | null;
 };
 
 const EMPTY: GambitState = {
-  connected: false, chat: [], context: null, spark: [], lastBot: null,
-  pending: null, inflight: {}, results: [], bandit: null, poll: null,
+  connected: false, chat: [], context: null, spark: [], viewerSpark: [], engagementSpark: [],
+  chattersSpark: [], lastBot: null,
+  pending: null, inflight: {}, results: [], bandit: null, poll: null, digest: null,
 };
 
 type Msg =
@@ -75,6 +84,9 @@ function reduce(s: GambitState, m: Msg): GambitState {
         ...s,
         context: f,
         spark: [...s.spark.slice(-MAX_SPARK + 1), f.participation],
+        viewerSpark: [...s.viewerSpark.slice(-MAX_SPARK + 1), f.viewer_count ?? 0],
+        engagementSpark: [...s.engagementSpark.slice(-MAX_SPARK + 1), f.msgs_per_min],
+        chattersSpark: [...s.chattersSpark.slice(-MAX_SPARK + 1), f.unique_chatters],
       };
 
     case 'action':
@@ -109,6 +121,9 @@ function reduce(s: GambitState, m: Msg): GambitState {
 
     case 'bandit':
       return { ...s, bandit: f };
+
+    case 'digest':
+      return { ...s, digest: f };
 
     default:
       return s;

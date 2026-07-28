@@ -5,11 +5,12 @@ import { useGambit, gym } from './useGambit';
 import LivePanel from './components/LivePanel';
 import Review from './components/Review';
 import Chat from './components/Chat';
+import Setup from './components/Setup';
 import { pct } from './types';
 
 export default function App() {
   const s = useGambit();
-  const [mode, setMode] = useState<'live' | 'review'>('live');
+  const [mode, setMode] = useState<'setup' | 'live' | 'review'>('setup');
   const [gymOn, setGymOn] = useState(false);
 
   useEffect(() => {
@@ -41,7 +42,7 @@ export default function App() {
       </span>
 
       <div className="ml-auto flex gap-0.5 rounded-lg border border-[var(--border)] p-0.5">
-        {(['live', 'review'] as const).map((m) => (
+        {(['setup', 'live', 'review'] as const).map((m) => (
           <button key={m} onClick={() => setMode(m)}
             className={`rounded-md px-3 py-1 font-semibold capitalize ${
               mode === m ? 'bg-[var(--bg-elevated)] text-[var(--text-primary)]' : 'text-[var(--text-muted)]'
@@ -56,7 +57,9 @@ export default function App() {
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[var(--bg-base)]">
       {bar}
-      {mode === 'review' ? (
+      {mode === 'setup' ? (
+        <div className="min-h-0 flex-1 overflow-y-auto"><Setup /></div>
+      ) : mode === 'review' ? (
         <div className="min-h-0 flex-1 p-6"><Review s={s} /></div>
       ) : (
         <div className="flex min-h-0 flex-1 gap-3 p-3">

@@ -4,7 +4,7 @@ import httpx
 
 from easy_kick.config import Settings
 from easy_kick.main import create_app
-from easy_kick.models import BANDIT_ARMS, Arm, Autonomy
+from easy_kick.models import BANDIT_ARMS, Arm, Autonomy, Mode
 
 
 def dev_client(**overrides):
@@ -86,6 +86,20 @@ async def test_autonomy_is_human_set_and_read_back():
     assert app.state.controller.enabled is False
 
 
+async def test_mode_and_fire_rate_are_human_set_and_read_back():
+    app, client = dev_client()
+    async with client:
+        response = await client.put("/controller/autonomy",
+                                    json={"mode": "manual",
+                                         "fire_rate": {"emote_rally": 2.0}})
+        body = response.json()
+
+    assert body["mode"] == Mode.MANUAL
+    assert body["fire_rate"] == {"emote_rally": 2.0}
+    assert app.state.controller.mode is Mode.MANUAL
+    assert app.state.controller.fire_rate[Arm.EMOTE_RALLY] == 2.0
+
+
 async def test_acting_on_a_card_that_is_not_waiting_is_a_404():
     app, client = dev_client()
     async with client:
@@ -99,7 +113,7 @@ async def test_the_policy_table_reports_what_has_been_learned():
         body = (await client.get("/controller/policy")).json()
 
     assert body["enabled"] is True
-    assert len(body["posteriors"]) == 15  # 5 arms × 3 states
+    assert len(body["posteriors"]) == 12  # 4 arms × 3 states
     assert body["insights"] == []  # nothing learned yet, and we do not pretend otherwise
 
 

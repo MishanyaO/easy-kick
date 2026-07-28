@@ -6,28 +6,13 @@ import type { GambitState } from '../useGambit';
 import {
   STATE_LABEL, VERDICT_COLOR, labelFor, pct, points, whyThisArm, type PollFrame,
 } from '../types';
+import Spark from './Spark';
 
 // Docked sits on `--bg-surface`: its only host is the Insights drawer, whose body is
 // `--bg-elevated`, so this is the darker inset — a card *in* the drawer, not on it.
 const FLOATING =
   'w-[360px] rounded-xl border bg-[var(--bg-surface)] shadow-[0_18px_50px_-8px_rgba(0,0,0,0.85)]';
 const DOCKED = 'w-full rounded-sm border bg-[var(--bg-surface)]';
-
-function Spark({ data, height = 22 }: { data: number[]; height?: number }) {
-  if (data.length < 2) return <div style={{ height }} />;
-  const W = 320;
-  const max = Math.max(...data) * 1.15 || 1;
-  const x = (i: number) => (i / (data.length - 1)) * W;
-  const y = (v: number) => height - (v / max) * (height - 3) - 1.5;
-  const d = data.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
-  return (
-    <svg viewBox={`0 0 ${W} ${height}`} preserveAspectRatio="none"
-      style={{ display: 'block', width: '100%', height }}>
-      <path d={d} fill="none" stroke="var(--kick-green)" strokeWidth="1.5"
-        vectorEffect="non-scaling-stroke" />
-    </svg>
-  );
-}
 
 /**
  * The live poll. Chat is voting right now, which is the only moment in the whole loop where

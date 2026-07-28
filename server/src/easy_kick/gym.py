@@ -62,12 +62,11 @@ class Archetype:
 # headroom is what an intervention converts. A world where everyone already talks has
 # nothing for any arm to win.
 ARCHETYPES = (
-    Archetype("lurker", 0.06, {Arm.EMOTE_RALLY: 3.5, Arm.SHOUTOUT: 1.5}),
+    Archetype("lurker", 0.06, {Arm.EMOTE_RALLY: 3.5}),
     Archetype("emote_enthusiast", 0.8, {Arm.EMOTE_RALLY: 2.0, Arm.CHAT_POLL: 0.6}),
-    Archetype("the_analyst", 0.4, {Arm.CHAT_POLL: 2.5, Arm.QUESTION_RELAY: 2.2}),
-    Archetype("regular", 1.0, {Arm.CHAT_POLL: 1.2, Arm.QUESTION_RELAY: 1.0,
-                               Arm.EMOTE_RALLY: 0.8}),
-    Archetype("newcomer", 0.15, {Arm.SHOUTOUT: 4.0, Arm.EMOTE_RALLY: 1.2}),
+    Archetype("the_analyst", 0.4, {Arm.CHAT_POLL: 2.5, Arm.QUIZ: 2.2}),
+    Archetype("regular", 1.0, {Arm.CHAT_POLL: 1.2, Arm.QUIZ: 1.0, Arm.EMOTE_RALLY: 0.8}),
+    Archetype("newcomer", 0.15, {Arm.EMOTE_RALLY: 1.2}),
     Archetype("hype_beast", 0.6, {Arm.EMOTE_RALLY: 2.5, Arm.PREDICTION: 2.0}),
 )
 

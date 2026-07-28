@@ -8,6 +8,7 @@ poison `nothing`'s statistics with choices the policy never made.
 
 import asyncio
 import logging
+import random
 import time
 import uuid
 from collections import Counter, deque
@@ -19,7 +20,7 @@ from .bandit import MIN_PULLS, Decision
 from .context import StreamContext
 from .engagement import EngagementMonitor
 from .hub import EventHub
-from .models import Arm, Autonomy, ChatState, EventEnvelope, EventType
+from .models import BANDIT_ARMS, Arm, Autonomy, ChatState, EventEnvelope, EventType, Mode
 from .reward import Outcome, RewardBook, Window
 from .store import EventStore
 
@@ -34,10 +35,11 @@ SCAN_LIMIT = 200  # how far back the copy helpers look for a question or a new c
 DEFAULT_AUTONOMY = {
     Arm.NOTHING: Autonomy.AUTO,
     Arm.EMOTE_RALLY: Autonomy.AUTO,  # spends nothing but a chat line
-    Arm.SHOUTOUT: Autonomy.AUTO,
     Arm.CHAT_POLL: Autonomy.ASK,  # occupies chat's attention
-    Arm.QUESTION_RELAY: Autonomy.ASK,
+    Arm.QUIZ: Autonomy.ASK,  # occupies chat's attention
     Arm.PREDICTION: Autonomy.ASK,  # stakes viewers' Channel Points. Not ours to spend
+    # Never posts to chat, so there's nothing for the streamer to approve.
+    Arm.CHAT_DIGEST: Autonomy.AUTO,
 }
 
 
@@ -54,24 +56,16 @@ TEMPLATES = {
     Arm.EMOTE_RALLY: Card("Emote rally", "drop a 🔥 if you saw that", []),
     Arm.CHAT_POLL: Card("Chat poll", "was that a good call? 1) yes  2) no — type 1 or 2",
                         ["1", "2"]),
-    Arm.QUESTION_RELAY: Card("Question relay", "there's a question in chat worth answering",
-                             []),
-    Arm.SHOUTOUT: Card("Shoutout", "welcome in, good to see a new face 👋", []),
+    Arm.QUIZ: Card("Quiz", "quick one: is that a buff or a debuff? 1) buff  2) debuff — "
+                    "type 1 or 2", ["1", "2"]),
     Arm.PREDICTION: Card("Prediction", "/prediction Do they clutch it? | yes | no", []),
+    Arm.CHAT_DIGEST: Card("Chat digest", "a question worth answering is getting buried", []),
 }
 
 
-def compose(arm: Arm, store: EventStore) -> Card:
+def compose(arm: Arm) -> Card:
     """Copy for one arm. Templates are the floor; an LLM writer would replace this and a
     slow or failed call would fall back here without touching the learning loop."""
-    match arm:
-        case Arm.QUESTION_RELAY:
-            if asked := _recent_question(store):
-                who, text = asked
-                return Card("Question relay", f"@{who} asked: {text}", [])
-        case Arm.SHOUTOUT:
-            if who := _newest_chatter(store):
-                return Card("Shoutout", f"welcome in @{who} 👋", [])
     return TEMPLATES[arm]
 
 
@@ -93,6 +87,13 @@ class Controller:
         self.approvals: Counter[Arm] = Counter()
         self.vetoes: Counter[tuple[ChatState, Arm]] = Counter()
 
+        # Set before the stream starts. In `manual`, `fire_rate` (fires/minute per arm) drives
+        # firing directly and the bandit is never consulted or updated. In `auto` (default),
+        # `fire_rate` is ignored entirely and Thompson sampling runs as normal — no blending.
+        self.mode = Mode.AUTO
+        self.fire_rate: dict[Arm, float] = {}
+        self._manual_windows: set[str] = set()
+
         self._window: Window | None = None
         self._card: Card | None = None
         self._awaiting_approval = False
@@ -103,13 +104,26 @@ class Controller:
         self._close_due(now)
         metrics = self._monitor.measure(now)
         state = self._monitor.classify(metrics)
-        self._publish("controller.context", self._context.frame(now, metrics.participation))
+        self._publish("controller.context",
+                      self._context.frame(now, metrics.participation, metrics.unique_chatters,
+                                          metrics.msgs_per_min))
         # Only once the prompt is actually in chat: a card still waiting for the streamer's
         # approval has asked nobody anything, so anything typed meanwhile is not a ballot.
         if self._window and self._window.fired and self._card and self._card.options:
             self._publish("controller.poll", self._poll_frame(self._window, self._card, now))
 
         if not self.enabled or self._window or self._railed(now):
+            return
+        # Bandit-adjacent: `chat_digest` never touches chat and is never scored, so it isn't
+        # one of the arms Thompson sampling competes over — but it still shares the cooldown
+        # and hourly cap, so it can't collide with a fired arm's window.
+        if (self.autonomy.get(Arm.CHAT_DIGEST) is not Autonomy.OFF
+                and not self._capped(Arm.CHAT_DIGEST, now)
+                and (highlight := _buried_highlight(self._store))):
+            self._fire_digest(highlight, now)
+            return
+        if self.mode is Mode.MANUAL:
+            self._manual_tick(state, metrics, now)
             return
         try:
             decision = self._bandit.select(state)
@@ -151,6 +165,8 @@ class Controller:
         """`GET /controller/policy`: the learned table, the rails, and what it all means."""
         return {
             "enabled": self.enabled,
+            "mode": self.mode,
+            "fire_rate": dict(self.fire_rate),
             "autonomy": dict(self.autonomy),
             "approvals": dict(self.approvals),
             "vetoes": [{"state": s, "arm": a, "count": n} for (s, a), n in self.vetoes.items()],
@@ -181,14 +197,14 @@ class Controller:
             self._fires.popleft()
         return sum(a == arm for _, a in self._fires) >= ARM_CAP_PER_HOUR
 
-    def _act(self, decision: Decision, metrics, now: float) -> None:
+    def _act(self, decision: Decision, metrics, now: float, *, manual: bool = False) -> None:
         arm, state = decision.arm, decision.state
         window_id = uuid.uuid4().hex[:12]
         autonomy = self.autonomy[arm]
         # `nothing` has no card and says nothing, but it still opens a window. Otherwise its
         # posterior never updates and the arm can never win — which is the whole reason the
         # bot stays quiet by default.
-        self._card = None if arm is Arm.NOTHING else compose(arm, self._store)
+        self._card = None if arm is Arm.NOTHING else compose(arm)
         self._awaiting_approval = self._card is not None and autonomy is Autonomy.ASK
         fires_now = self._card is not None and not self._awaiting_approval
 
@@ -199,9 +215,35 @@ class Controller:
                           _action(window_id, decision, self._card, metrics, now, autonomy))
 
         self._window = self._rewards.open(window_id, state, arm, now, fired=fires_now)
+        if manual:
+            self._manual_windows.add(window_id)
         self._publish("controller.bandit",
                       {**self._bandit.snapshot(), "type": "bandit", "ts": _iso(now),
                        "last_decision": decision.frame()})
+
+    def _fire_chance(self, arm: Arm) -> float:
+        """Slider rate (fires/minute) turned into a per-tick firing probability."""
+        return min(1.0, self.fire_rate.get(arm, 0.0) * TICK_S / 60.0)
+
+    def _manual_tick(self, state: ChatState, metrics, now: float) -> None:
+        """Sliders decide, not the bandit — `bandit.select()` is never called here, and the
+        window this opens is flagged so its close never updates a posterior."""
+        eligible = [
+            arm for arm in BANDIT_ARMS if arm is not Arm.NOTHING
+            and self.autonomy[arm] is not Autonomy.OFF and not self._capped(arm, now)
+            and random.random() < self._fire_chance(arm)
+        ]
+        if not eligible:
+            return
+        arm = random.choice(eligible)
+        self._act(Decision(state, arm, {}, self._fire_chance(arm)), metrics, now, manual=True)
+
+    def _fire_digest(self, highlight: tuple[str, str], now: float) -> None:
+        """Card-only: never calls `perform`, never opens a scored window."""
+        self._fires.append((now, Arm.CHAT_DIGEST))
+        who, text = highlight
+        card = Card("Chat digest", f"@{who} asked, and it's still buried: {text}", [])
+        self._publish("controller.digest", _digest(card, highlight, now))
 
     def _do_fire(self, arm: Arm, state: ChatState, card: Card | None, now: float) -> None:
         self._fires.append((now, arm))
@@ -214,6 +256,8 @@ class Controller:
         if window is None or now < window.closes_at:
             return
         self._window = self._card = None
+        manual = window.id in self._manual_windows
+        self._manual_windows.discard(window.id)
 
         if self._awaiting_approval:
             # Nobody answered the card. No fire, no signal, no update.
@@ -222,7 +266,8 @@ class Controller:
             return
 
         outcome = self._rewards.close(window, now)
-        self._bandit.update(window.state, window.arm, outcome.reward)
+        if not manual:
+            self._bandit.update(window.state, window.arm, outcome.reward)
         self._publish("controller.result",
                       _result(window, outcome, "fired" if window.fired else "skipped",
                               self._votes(window, card)))
@@ -349,6 +394,18 @@ def _action(window_id: str, decision: Decision, card: Card, metrics, now: float,
     }
 
 
+def _digest(card: Card, highlight: tuple[str, str], now: float) -> dict:
+    who, text = highlight
+    return {
+        "type": "digest",
+        "ts": _iso(now),
+        "kind": Arm.CHAT_DIGEST,
+        "title": card.title,
+        "body": card.body,
+        "highlight": {"who": who, "text": text},
+    }
+
+
 def _result(window: Window, outcome: Outcome | None, status: str,
             votes: dict[str, int] | None = None) -> dict:
     return {
@@ -406,28 +463,28 @@ def _evidence(bandit) -> int:
     return sum(cell.pulls for cell in bandit.cells.values())
 
 
-def _recent_question(store: EventStore) -> tuple[str, str] | None:
-    """The newest chat message that reads as a question, with whoever asked it."""
-    for i, ev in enumerate(store.iter_recent()):
-        if i >= SCAN_LIMIT:
-            break
-        content = ev.payload.get("content") or ""
-        if ev.type == EventType.CHAT_MESSAGE_SENT and content.rstrip().endswith("?"):
-            return ev.username("sender") or "someone", content
-    return None
+def _buried_highlight(store: EventStore) -> tuple[str, str] | None:
+    """A question several people are asking — easy to miss in a fast-moving chat.
 
-
-def _newest_chatter(store: EventStore) -> str | None:
-    """The most recent chatter who has said only one thing — a plausible first-timer."""
+    Generalizes what used to be `question_relay`'s "the newest question" into "the question
+    with the most independent askers", which is what makes it worth surfacing on a digest
+    instead of reacting to a single message.
+    """
     counts: Counter[str] = Counter()
-    order: list[str] = []
+    first_seen: dict[str, tuple[str, str]] = {}
     for i, ev in enumerate(store.iter_recent()):
         if i >= SCAN_LIMIT:
             break
-        if ev.type == EventType.CHAT_MESSAGE_SENT and (who := ev.username("sender")):
-            counts[who] += 1
-            order.append(who)
-    return next((who for who in order if counts[who] == 1), None)
+        content = (ev.payload.get("content") or "").strip()
+        if ev.type != EventType.CHAT_MESSAGE_SENT or not content.endswith("?"):
+            continue
+        key = _normalise(content)
+        counts[key] += 1
+        first_seen.setdefault(key, (ev.username("sender") or "someone", content))
+    recurring = [key for key, n in counts.items() if n >= 2]
+    if not recurring:
+        return None
+    return first_seen[max(recurring, key=lambda k: counts[k])]
 
 
 def _iso(moment: float) -> str:

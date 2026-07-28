@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from ..config import PROJECT_ROOT
 from ..controller import TICK_S, Controller
 from ..gym import POLICIES, Gym, simulate
-from ..models import Arm, Autonomy
+from ..models import Arm, Autonomy, Mode
 
 router = APIRouter(tags=["controller"])
 gym_router = APIRouter(prefix="/dev/gym", tags=["development"])
@@ -164,6 +164,10 @@ class AutonomyUpdate(BaseModel):
 
     autonomy: dict[Arm, Autonomy] | None = None
     enabled: bool | None = None
+    # Set before the stream starts. `manual`: `fire_rate` (fires/minute per arm) drives firing
+    # directly, the bandit is never consulted. `auto`: `fire_rate` is ignored entirely.
+    mode: Mode | None = None
+    fire_rate: dict[Arm, float] | None = None
 
 
 @router.put("/controller/autonomy")
@@ -173,8 +177,13 @@ async def set_autonomy(body: AutonomyUpdate, request: Request) -> dict:
         controller.autonomy.update(body.autonomy)
     if body.enabled is not None:
         controller.enabled = body.enabled
+    if body.mode is not None:
+        controller.mode = body.mode
+    if body.fire_rate:
+        controller.fire_rate.update(body.fire_rate)
     return {"enabled": controller.enabled, "autonomy": controller.autonomy,
-            "promotions": controller.promotions()}
+            "promotions": controller.promotions(),
+            "mode": controller.mode, "fire_rate": controller.fire_rate}
 
 
 @router.get("/eval/results")

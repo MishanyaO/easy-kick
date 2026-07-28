@@ -51,13 +51,16 @@ class StreamContext:
         """Chat at minute five is not chat at hour six."""
         return max(0.0, now - self.started_at) if self.started_at else 0.0
 
-    def frame(self, now: float, participation: float) -> dict:
+    def frame(self, now: float, participation: float, unique_chatters: int = 0,
+              msgs_per_min: float = 0.0) -> dict:
         """The `controller.context` SSE payload."""
         return {
             "type": "context",
             "viewer_count": self.viewer_count,
             "category": self.category,
             "participation": participation,
+            "unique_chatters": unique_chatters,
+            "msgs_per_min": msgs_per_min,
             "uptime_s": self.uptime_s(now),
             "streamer_speaking": self.speaking,
         }

@@ -26,8 +26,8 @@ const SECTIONS: { heading: string; rows: Row[] }[] = [
     rows: [
       { label: "Emote rally", kind: "toggle", on: true },
       { label: "Chat poll", kind: "toggle", on: true },
-      { label: "Question relay", kind: "toggle", on: true },
-      { label: "Shoutout", kind: "toggle", on: false },
+      { label: "Quiz", kind: "toggle", on: true },
+      { label: "Chat digest", kind: "toggle", on: true },
       { label: "Prediction", muted: true },
     ],
   },

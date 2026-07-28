@@ -35,8 +35,8 @@ class Arm(StrEnum):
     NOTHING = "nothing"
     EMOTE_RALLY = "emote_rally"
     CHAT_POLL = "chat_poll"
-    QUESTION_RELAY = "question_relay"
-    SHOUTOUT = "shoutout"
+    QUIZ = "quiz"
+    CHAT_DIGEST = "chat_digest"
     PREDICTION = "prediction"
 
 
@@ -48,9 +48,18 @@ class Autonomy(StrEnum):
     OFF = "off"
 
 
+class Mode(StrEnum):
+    """Set before the stream starts. `manual`: the streamer's fire-rate sliders decide, the
+    bandit is never consulted. `auto`: sliders are ignored, Thompson sampling runs freely."""
+
+    AUTO = "auto"
+    MANUAL = "manual"
+
+
 # What the bandit chooses between. `PREDICTION` stakes viewers' Channel Points, so it stays
-# a manual card rather than an arm we explore.
-BANDIT_ARMS = (Arm.NOTHING, Arm.EMOTE_RALLY, Arm.CHAT_POLL, Arm.QUESTION_RELAY, Arm.SHOUTOUT)
+# a manual card rather than an arm we explore. `CHAT_DIGEST` is a streamer-only card triggered
+# by its own eligibility rule, not selected by Thompson sampling, so it's also excluded here.
+BANDIT_ARMS = (Arm.NOTHING, Arm.EMOTE_RALLY, Arm.CHAT_POLL, Arm.QUIZ)
 
 
 def parse_timestamp(timestamp: str) -> datetime | None:

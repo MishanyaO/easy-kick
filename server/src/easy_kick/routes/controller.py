@@ -30,15 +30,22 @@ class GymState:
     gym: Gym | None = field(default=None, repr=False)
     speed: float = 1.0
     seed: int = 0
+    paused_at: float | None = field(default=None, repr=False)
 
     @property
     def running(self) -> bool:
         return self.task is not None and not self.task.done()
 
+    @property
+    def paused(self) -> bool:
+        """Held onto its gym and metrics, just not ticking — a stopped one has neither."""
+        return self.gym is not None and not self.running
+
     def status(self) -> dict:
         gym = self.gym
+        status = "running" if self.running else "paused" if self.paused else "idle"
         return {
-            "status": "running" if self.running else "idle",
+            "status": status,
             "speed": self.speed,
             "seed": self.seed,
             "virtual_time_s": gym.t if gym else 0.0,
@@ -85,10 +92,19 @@ async def start_gym(request: Request, speed: float = Query(1.0, gt=0, le=100),
     state: GymState = request.app.state.gym
     if state.running:
         raise HTTPException(status_code=409, detail="a gym is already running")
+    context = request.app.state.context
 
-    state.speed, state.seed = speed, seed
-    state.gym = Gym(seed=seed, store=request.app.state.store, hub=request.app.state.hub)
-    request.app.state.context.started_at = time.time()
+    if state.paused:
+        # Resuming: keep the gym, its metrics, and "Time Live" — just shift
+        # started_at forward by however long the pause lasted.
+        if context.started_at is not None and state.paused_at is not None:
+            context.started_at += time.time() - state.paused_at
+        state.paused_at = None
+    else:
+        state.speed, state.seed = speed, seed
+        state.gym = Gym(seed=seed, store=request.app.state.store, hub=request.app.state.hub)
+        context.started_at = time.time()
+
     request.app.state.controller.perform = gym_fire(request.app, state)
     state.task = asyncio.create_task(_run_gym(request.app, state))
     logger.info("gym started: seed=%s speed=%s", seed, speed)
@@ -100,14 +116,33 @@ async def gym_status(request: Request) -> dict:
     return request.app.state.gym.status()
 
 
-@gym_router.delete("")
-async def stop_gym(request: Request) -> dict:
+@gym_router.post("/pause")
+async def pause_gym(request: Request) -> dict:
+    """Stop ticking without losing the gym, its metrics, or the elapsed uptime."""
     state: GymState = request.app.state.gym
     if not state.running:
-        return state.status()
+        raise HTTPException(status_code=409, detail="gym is not running")
     state.task.cancel()
     with suppress(asyncio.CancelledError):
         await state.task
+    state.task = None
+    state.paused_at = time.time()
+    logger.info("gym paused")
+    return state.status()
+
+
+@gym_router.delete("")
+async def stop_gym(request: Request) -> dict:
+    state: GymState = request.app.state.gym
+    if state.running:
+        state.task.cancel()
+        with suppress(asyncio.CancelledError):
+            await state.task
+    state.task = None
+    state.gym = None
+    state.paused_at = None
+    request.app.state.context.started_at = None
+    logger.info("gym stopped")
     return {**state.status(), "status": "stopped"}
 
 

@@ -202,6 +202,8 @@ export function useGambit() {
 export const gym = {
   start: (speed = 20, seed = 7) =>
     fetch(`${API_BASE}/dev/gym?speed=${speed}&seed=${seed}`, { method: 'POST' }),
+  /** Resumes a paused gym in place (same metrics, same "Time Live") if one is paused. */
+  pause: () => fetch(`${API_BASE}/dev/gym/pause`, { method: 'POST' }),
   stop: () => fetch(`${API_BASE}/dev/gym`, { method: 'DELETE' }),
   status: () => fetch(`${API_BASE}/dev/gym`).then((r) => r.json()),
 };

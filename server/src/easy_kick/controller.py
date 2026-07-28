@@ -54,10 +54,10 @@ class Card:
 
 TEMPLATES = {
     Arm.EMOTE_RALLY: Card("Emote rally", "drop a 🔥 if you saw that", []),
-    Arm.CHAT_POLL: Card("Chat poll", "was that a good call? 1) yes  2) no — type 1 or 2",
-                        ["1", "2"]),
-    Arm.QUIZ: Card("Quiz", "quick one: is that a buff or a debuff? 1) buff  2) debuff — "
-                    "type 1 or 2", ["1", "2"]),
+    Arm.CHAT_POLL: Card("Chat poll", "was that a good call? type yes or no",
+                        ["yes", "no"]),
+    Arm.QUIZ: Card("Quiz", "quick one: is that a buff or a debuff? type buff or debuff",
+                    ["buff", "debuff"]),
     Arm.PREDICTION: Card("Prediction", "/prediction Do they clutch it? | yes | no", []),
     Arm.CHAT_DIGEST: Card("Chat digest", "a question worth answering is getting buried", []),
 }

@@ -1,18 +1,29 @@
-import { ExternalLink, FlaskConical, Info, Pencil, Play, Square } from 'lucide-react';
+import { ExternalLink, FlaskConical, Info, Pause, Pencil, Play, Square } from 'lucide-react';
 import Panel, { PanelButton } from './Panel';
+
+type GymStatus = 'idle' | 'running' | 'paused';
 
 /**
  * Kick's "Stream info" panel. The stream details are static chrome; the gym
  * control rides along at the bottom, since this panel is where you'd go to
  * change what the stream is doing.
+ *
+ * Pause and Stop are distinct: pausing freezes the running gym in place (same
+ * metrics, same "Time Live") so Start resumes it; Stop discards it, and the
+ * next Start begins a fresh session.
  */
 export default function StreamInfo({
-  gymOn,
-  onToggleGym,
+  gymStatus,
+  onStartGym,
+  onPauseGym,
+  onStopGym,
 }: {
-  gymOn: boolean;
-  onToggleGym: () => void;
+  gymStatus: GymStatus;
+  onStartGym: () => void;
+  onPauseGym: () => void;
+  onStopGym: () => void;
 }) {
+  const gymOn = gymStatus === 'running';
   return (
     <Panel
       title="Stream info"
@@ -48,19 +59,30 @@ export default function StreamInfo({
           <span
             className={`size-1.5 rounded-full ${gymOn ? 'bg-[var(--kick-green)]' : 'bg-[var(--text-muted)]'}`}
           />
-          Gym
+          Gym{gymStatus === 'paused' ? ' (paused)' : ''}
         </span>
-        <button
-          onClick={onToggleGym}
-          className={`flex h-7 items-center justify-center gap-1.5 rounded text-xs font-semibold transition-colors ${
-            gymOn
-              ? 'bg-[var(--bg-surface)] text-white hover:bg-[var(--bg-elevated)]'
-              : 'bg-[var(--kick-green)] text-[var(--on-primary)] hover:bg-[var(--kick-green-dim)]'
-          }`}
-        >
-          {gymOn ? <Square size={12} /> : <Play size={12} />}
-          {gymOn ? 'Stop gym' : 'Start gym'}
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={gymOn ? onPauseGym : onStartGym}
+            className={`flex h-7 flex-1 items-center justify-center gap-1.5 rounded text-xs font-semibold transition-colors ${
+              gymOn
+                ? 'bg-[var(--bg-surface)] text-white hover:bg-[var(--bg-elevated)]'
+                : 'bg-[var(--kick-green)] text-[var(--on-primary)] hover:bg-[var(--kick-green-dim)]'
+            }`}
+          >
+            {gymOn ? <Pause size={12} /> : <Play size={12} />}
+            {gymOn ? 'Pause' : gymStatus === 'paused' ? 'Resume' : 'Start gym'}
+          </button>
+          {gymStatus !== 'idle' && (
+            <button
+              onClick={onStopGym}
+              className="flex h-7 items-center justify-center gap-1.5 rounded bg-[var(--bg-surface)] px-3 text-xs font-semibold text-white transition-colors hover:bg-[var(--bg-elevated)]"
+            >
+              <Square size={12} />
+              Stop
+            </button>
+          )}
+        </div>
       </div>
     </Panel>
   );

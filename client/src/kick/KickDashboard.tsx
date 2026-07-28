@@ -31,18 +31,26 @@ import { useGambit, gym } from '../useGambit';
 export default function KickDashboard() {
   const s = useGambit();
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [gymOn, setGymOn] = useState(false);
+  const [gymStatus, setGymStatus] = useState<'idle' | 'running' | 'paused'>('idle');
 
   useEffect(() => {
     void gym
       .status()
-      .then((g) => setGymOn(g.status === 'running'))
+      .then((g) => setGymStatus(g.status))
       .catch(() => undefined);
   }, []);
 
-  const toggleGym = async () => {
-    await (gymOn ? gym.stop() : gym.start(20, 7));
-    setGymOn(!gymOn);
+  const startGym = async () => {
+    await gym.start(20, 7);
+    setGymStatus('running');
+  };
+  const pauseGym = async () => {
+    await gym.pause();
+    setGymStatus('paused');
+  };
+  const stopGym = async () => {
+    await gym.stop();
+    setGymStatus('idle');
   };
 
   return (
@@ -56,7 +64,7 @@ export default function KickDashboard() {
               the column overflows, and a squeezed panel clips its own header. */}
           <div className="flex min-h-0 flex-col gap-1 overflow-y-auto">
             <div className="shrink-0">
-              <SessionInfo context={s.context} live={s.connected} />
+              <SessionInfo context={s.context} live={gymStatus === 'running'} />
             </div>
 
             {/* Aspect, not a fixed height — a short wide box crops the banner. */}
@@ -106,7 +114,12 @@ export default function KickDashboard() {
           </Panel>
 
           <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-1">
-            <StreamInfo gymOn={gymOn} onToggleGym={() => void toggleGym()} />
+            <StreamInfo
+              gymStatus={gymStatus}
+              onStartGym={() => void startGym()}
+              onPauseGym={() => void pauseGym()}
+              onStopGym={() => void stopGym()}
+            />
             <ChannelActions />
           </div>
         </main>

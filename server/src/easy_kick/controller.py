@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 from .bandit import MIN_PULLS, Decision
 from .context import StreamContext
-from .engagement import EngagementMonitor
+from .engagement import BOT_NAME, EngagementMonitor
 from .hub import EventHub
 from .models import BANDIT_ARMS, Arm, Autonomy, ChatState, EventEnvelope, EventType, Mode
 from .reward import Outcome, RewardBook, Window
@@ -475,6 +475,8 @@ def _buried_highlight(store: EventStore) -> tuple[str, str] | None:
             break
         content = (ev.payload.get("content") or "").strip()
         if ev.type != EventType.CHAT_MESSAGE_SENT or not content.endswith("?"):
+            continue
+        if ev.username("sender") == BOT_NAME:  # our own line is not a buried question
             continue
         key = _normalise(content)
         counts[key] += 1

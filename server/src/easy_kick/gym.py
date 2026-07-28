@@ -44,8 +44,8 @@ STATE_GAIN = {ChatState.LULL: 1.4, ChatState.STEADY: 1.0, ChatState.SPIKE: -0.3}
 FATIGUE_PER_FIRE = 0.6  # the fourth emote rally in an hour lands worse than the first
 FATIGUE_RECOVERY_S = 1800.0
 
-CHATTER = ("nice", "lets go", "🔥", "no way", "gg", "how did he do that", "first time here",
-           "that was clean", "🚀🚀", "what happened", "lmao", "insane")
+CHATTER = ("nice", "lets go", "🔥", "no way", "gg", "how did he do that?", "first time here",
+           "that was clean", "🚀🚀", "what happened?", "lmao", "insane")
 
 
 @dataclass(frozen=True)

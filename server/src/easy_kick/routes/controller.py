@@ -88,6 +88,7 @@ async def start_gym(request: Request, speed: float = Query(1.0, gt=0, le=100),
 
     state.speed, state.seed = speed, seed
     state.gym = Gym(seed=seed, store=request.app.state.store, hub=request.app.state.hub)
+    request.app.state.context.started_at = time.time()
     request.app.state.controller.perform = gym_fire(request.app, state)
     state.task = asyncio.create_task(_run_gym(request.app, state))
     logger.info("gym started: seed=%s speed=%s", seed, speed)

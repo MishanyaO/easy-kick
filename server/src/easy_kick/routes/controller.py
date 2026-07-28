@@ -10,10 +10,15 @@ from dataclasses import dataclass, field
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from ..bandit import Bandit
 from ..config import PROJECT_ROOT
-from ..controller import TICK_S, Controller
+from ..context import StreamContext
+from ..controller import TICK_S, Controller, hub_publisher
+from ..engagement import EngagementMonitor
 from ..gym import POLICIES, Gym, simulate
 from ..models import Arm, Autonomy, Mode
+from ..reward import RewardBook
+from ..store import EventStore
 
 router = APIRouter(tags=["controller"])
 gym_router = APIRouter(prefix="/dev/gym", tags=["development"])
@@ -133,6 +138,10 @@ async def pause_gym(request: Request) -> dict:
 
 @gym_router.delete("")
 async def stop_gym(request: Request) -> dict:
+    """Stop, and leave nothing behind: a gym run mutates shared, request-scoped state
+    (the event store, the controller's rails and posteriors, the stream context) that
+    `pause` deliberately preserves but a real stop must not — otherwise the next gym
+    run, or a switch to live traffic, starts contaminated by synthetic history."""
     state: GymState = request.app.state.gym
     if state.running:
         state.task.cancel()
@@ -141,9 +150,26 @@ async def stop_gym(request: Request) -> dict:
     state.task = None
     state.gym = None
     state.paused_at = None
-    request.app.state.context.started_at = None
+    _reset_shared_state(request.app)
     logger.info("gym stopped")
     return {**state.status(), "status": "stopped"}
+
+
+def _reset_shared_state(app) -> None:
+    """Rebuild everything the gym touches, the same way `create_app` builds it fresh."""
+    app.state.context = StreamContext()
+    app.state.store = EventStore(maxlen=app.state.settings.buffer_size)
+    app.state.bandit = Bandit()
+    app.state.monitor = EngagementMonitor(app.state.store, app.state.context)
+    app.state.controller = Controller(
+        monitor=app.state.monitor,
+        bandit=app.state.bandit,
+        rewards=RewardBook(app.state.monitor),
+        context=app.state.context,
+        store=app.state.store,
+        publish=hub_publisher(app.state.hub),
+        perform=live_fire(app) if app.state.settings.controller_enabled else None,
+    )
 
 
 @gym_router.post("/speedrun")

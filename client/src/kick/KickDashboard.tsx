@@ -50,6 +50,7 @@ export default function KickDashboard() {
   };
   const stopGym = async () => {
     await gym.stop();
+    s.reset();
     setGymStatus('idle');
   };
 

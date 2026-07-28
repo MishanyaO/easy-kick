@@ -73,11 +73,15 @@ type Msg =
   | { kind: 'close' }
   | { kind: 'approve'; id: string }
   | { kind: 'dismiss'; id: string }
-  | { kind: 'dismissPoll' };
+  | { kind: 'dismissPoll' }
+  | { kind: 'reset' };
 
 function reduce(s: GambitState, m: Msg): GambitState {
   if (m.kind === 'open') return { ...s, connected: true };
   if (m.kind === 'close') return { ...s, connected: false };
+  // The gym stopped: the backend just handed out a fresh store/bandit/controller/context,
+  // so everything accumulated from the old run (chat, sparklines, ledger, cards) is stale.
+  if (m.kind === 'reset') return { ...EMPTY, connected: s.connected };
 
   // Optimistic local transitions — the backend confirms with a `result` frame.
   if (m.kind === 'approve') {
@@ -200,7 +204,11 @@ export function useGambit() {
    *  server-side to confirm. */
   const dismissPoll = () => dispatch({ kind: 'dismissPoll' });
 
-  return { ...state, decide, dismissPoll };
+  /** Wipe every accumulated frame back to a blank slate — call this right after the gym
+   *  stops, since the backend has just discarded the state that produced all of it. */
+  const reset = () => dispatch({ kind: 'reset' });
+
+  return { ...state, decide, dismissPoll, reset };
 }
 
 export const gym = {

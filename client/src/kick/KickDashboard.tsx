@@ -10,8 +10,7 @@ import ChannelActions from './ChannelActions';
 import ChatComposer from './ChatComposer';
 import IconRail from './IconRail';
 import ActivityFeed from './ActivityFeed';
-import ModActions from './ModActions';
-import InsightsDrawer from './InsightsDrawer';
+import Insights from './Insights';
 import Chat from '../components/Chat';
 import { useGambit, gym } from '../useGambit';
 
@@ -22,13 +21,12 @@ import { useGambit, gym } from '../useGambit';
  * `--bg-surface` cards floating on a black page with 4px gutters, all measured
  * off the live dashboard.
  *
- * Kick's own panels are reproduced as they ship, Mod Actions included. Our surface
- * is the one thing that is *not* a Kick panel: `InsightsDrawer` floats over the
- * whole dashboard, parked by the streamer over the preview, because the streamer is
- * looking at the preview and not at us. Analytics and Tactics live one click away in
- * the drawer's popout tab (`?insights`). Activity Feed, Session Info and Chat carry
- * the rest of the live data; Mod Actions, Channel Actions and the rail are inert
- * Kick chrome.
+ * Kick's own Mod Actions panel shipped empty — no moderation data, no reason to keep it —
+ * so ours, `Insights`, sits in that slot instead: a mini graph plus whatever needs the
+ * streamer's attention now (a pending approval, chat_digest cards). Analytics and Tactics
+ * live one click away via its popout (`?insights`). The live poll tally lives in Chat's
+ * own pinned-banner slot, not here. Activity Feed, Session Info and Chat carry the rest of
+ * the live data; Channel Actions and the rail are inert Kick chrome.
  */
 export default function KickDashboard() {
   const s = useGambit();
@@ -66,11 +64,11 @@ export default function KickDashboard() {
               <StreamPreview />
             </div>
 
-            {/* Kick's own bottom row, restored: Activity Feed beside Mod Actions.
-                Insights no longer squats in the Mod Actions slot — it floats. */}
+            {/* Kick's own bottom row, but the right half is ours now: Insights in the
+                slot Mod Actions used to occupy. */}
             <div className="grid min-h-[420px] flex-1 grid-cols-2 gap-1">
               <ActivityFeed s={s} />
-              <ModActions />
+              <Insights s={s} onDecide={s.decide} />
             </div>
           </div>
 
@@ -98,6 +96,9 @@ export default function KickDashboard() {
                 lastBot={s.lastBot}
                 participation={s.context?.participation}
                 viewers={s.context?.viewer_count}
+                poll={s.poll}
+                closedPoll={s.closedPoll}
+                onDismissPoll={s.dismissPoll}
                 frameless
               />
             </div>
@@ -114,10 +115,6 @@ export default function KickDashboard() {
           <IconRail />
         </div>
       </div>
-
-      {/* Ours, and the only thing on this screen that is: floating, user-parked,
-          above the whole dashboard rather than inside one of Kick's slots. */}
-      <InsightsDrawer s={s} />
     </div>
   );
 }

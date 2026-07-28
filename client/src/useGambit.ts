@@ -13,6 +13,16 @@ const MAX_CHAT = 80;
 const MAX_SPARK = 90;
 const BACKLOG = 200; // chat messages replayed on connect // ~3 min of context frames at one every 2s
 
+/** A poll/quiz window's final split, kept around after close until the streamer dismisses
+ *  it or a new bot line replaces it — see the `closedPoll` notes on the reducer below. */
+export type ClosedPoll = {
+  action_id: string;
+  question: string;
+  options: string[];
+  votes: Record<string, number>;
+  voters: number;
+};
+
 export type GambitState = {
   connected: boolean;
   chat: ChatFrame[];
@@ -38,14 +48,20 @@ export type GambitState = {
   bandit: BanditFrame | null;
   /** the poll currently taking votes, if the open window has one */
   poll: PollFrame | null;
-  /** the most recent chat_digest card, if any — never posted to chat, never scored */
-  digest: DigestFrame | null;
+  /** the most recently closed poll/quiz's final split, if the streamer hasn't dismissed it
+   *  and no newer bot line has replaced it — see the `chat`/`result` reducer cases */
+  closedPoll: ClosedPoll | null;
+  /** chat_digest cards, newest first — never posted to chat, never scored */
+  digests: DigestFrame[];
 };
+
+const MAX_DIGESTS = 20;
 
 const EMPTY: GambitState = {
   connected: false, chat: [], context: null, spark: [], viewerSpark: [], engagementSpark: [],
   chattersSpark: [], lastBot: null,
-  pending: null, inflight: {}, results: [], bandit: null, poll: null, digest: null,
+  pending: null, inflight: {}, results: [], bandit: null, poll: null, closedPoll: null,
+  digests: [],
 };
 
 type Msg =
@@ -53,7 +69,8 @@ type Msg =
   | { kind: 'open' }
   | { kind: 'close' }
   | { kind: 'approve'; id: string }
-  | { kind: 'dismiss'; id: string };
+  | { kind: 'dismiss'; id: string }
+  | { kind: 'dismissPoll' };
 
 function reduce(s: GambitState, m: Msg): GambitState {
   if (m.kind === 'open') return { ...s, connected: true };
@@ -68,16 +85,23 @@ function reduce(s: GambitState, m: Msg): GambitState {
   if (m.kind === 'dismiss') {
     return s.pending?.id === m.id ? { ...s, pending: null } : s;
   }
+  if (m.kind === 'dismissPoll') {
+    return { ...s, closedPoll: null };
+  }
 
   const f = m.frame;
 
   switch (f.type) {
-    case 'chat':
+    case 'chat': {
+      const isBot = f.username === BOT_NAME;
       return {
         ...s,
         chat: [...s.chat.slice(-MAX_CHAT + 1), f],
-        lastBot: f.username === BOT_NAME ? f : s.lastBot,
+        lastBot: isBot ? f : s.lastBot,
+        // A new bot line is "a new thing" — the closed poll's tally has had its moment.
+        closedPoll: isBot ? null : s.closedPoll,
       };
+    }
 
     case 'context':
       return {
@@ -108,14 +132,25 @@ function reduce(s: GambitState, m: Msg): GambitState {
       const rest = Object.fromEntries(
         Object.entries(s.inflight).filter(([id]) => id !== f.action_id),
       );
+      const wasThisPoll = s.poll?.action_id === f.action_id;
       return {
         ...s,
         inflight: rest,
         // a `nothing` decision closes a window too — keep it, it is a real trial
         results: [{ ...f, action }, ...s.results].slice(0, 200),
         pending: s.pending?.id === f.action_id ? null : s.pending,
-        // the window that owned the poll is closed; its final split lives on the result
-        poll: s.poll?.action_id === f.action_id ? null : s.poll,
+        poll: wasThisPoll ? null : s.poll,
+        // the window that owned the poll is closed, but its final split stays pinned above
+        // chat — collapsing straight to plain text the instant it resolves reads as broken.
+        closedPoll: wasThisPoll && action?.options.length
+          ? {
+            action_id: f.action_id,
+            question: action.body,
+            options: action.options,
+            votes: f.votes,
+            voters: Object.values(f.votes).reduce((a, n) => a + n, 0),
+          }
+          : s.closedPoll,
       };
     }
 
@@ -123,7 +158,7 @@ function reduce(s: GambitState, m: Msg): GambitState {
       return { ...s, bandit: f };
 
     case 'digest':
-      return { ...s, digest: f };
+      return { ...s, digests: [f, ...s.digests].slice(0, MAX_DIGESTS) };
 
     default:
       return s;
@@ -157,7 +192,11 @@ export function useGambit() {
       .catch(() => undefined);
   };
 
-  return { ...state, decide };
+  /** Clear a closed poll's tally from the pinned banner by hand — purely local, nothing
+   *  server-side to confirm. */
+  const dismissPoll = () => dispatch({ kind: 'dismissPoll' });
+
+  return { ...state, decide, dismissPoll };
 }
 
 export const gym = {

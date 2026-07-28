@@ -9,9 +9,119 @@
 // that FREEZES while you are scrolled up, with a green "New messages" divider, rather
 // than one that keeps growing under your cursor.
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import type { ChatFrame } from '../types';
-import { BOT_NAME } from '../useGambit';
+import { X } from 'lucide-react';
+import type { ChatFrame, PollFrame } from '../types';
+import { BOT_NAME, type ClosedPoll } from '../useGambit';
 import { ModerationIcon } from '../kick/icons';
+
+/**
+ * The poll, pinned above the message list in the same slot the plain last-line banner
+ * uses — while chat is voting (or just finished), that IS the bot's last line, and showing
+ * both at once would just repeat the question with and without vote bars.
+ *
+ * Live while `closesInS` is a number (countdown, "chat is voting"); once the window closes
+ * it keeps showing the final tally instead of collapsing back to plain text — a poll that
+ * vanishes the instant it resolves reads as broken, not finished. It stays up until the
+ * streamer dismisses it or a new bot line replaces it (see the `closedPoll`-clearing logic
+ * in useGambit's reducer).
+ *
+ * Percentages are withheld below MIN_FOR_PCT. A poll that gets two votes is a real outcome
+ * and must not look broken, but "100% yes" off two ballots is a lie told confidently; raw
+ * counts are honest at any N, and the voter line says how thin the evidence is.
+ *
+ * Options render as buttons for the native-poll look Kick's own UI has — real votes are
+ * counted from chat replies, not clicks, so these are unclickable, but a bar of plain text
+ * reads as "a hack", and a poll widget with a live tally reads as "a real poll".
+ */
+const MIN_FOR_PCT = 10;
+
+function PollBanner({ poll, closesInS, onDismiss }: {
+  poll: { question: string; options: string[]; votes: Record<string, number>; voters: number };
+  /** Present while the window is still open; absent once it has closed. */
+  closesInS?: number;
+  /** Present once closed — lets the streamer clear the final tally by hand. */
+  onDismiss?: () => void;
+}) {
+  const total = Object.values(poll.votes).reduce((a, n) => a + n, 0);
+  const top = Math.max(1, ...Object.values(poll.votes));
+  const live = closesInS !== undefined;
+  return (
+    <div
+      className="shrink-0 border-b border-[var(--border)] px-2 py-1.5"
+      style={{ background: 'rgba(83,252,24,0.06)' }}
+    >
+      <div className="flex items-center gap-1.5">
+        <span
+          className="rounded px-1 py-px text-[9px] font-bold tracking-wider text-black"
+          style={{ background: 'var(--kick-green)' }}
+        >
+          GAMBIT
+        </span>
+        <span className="text-[9px] uppercase tracking-widest text-[var(--kick-green)]">
+          {live ? 'chat is voting' : 'final tally'}
+        </span>
+        {live ? (
+          <span className="tnum ml-auto text-[9px] text-[var(--text-muted)]">
+            {closesInS.toFixed(0)}s left
+          </span>
+        ) : (
+          onDismiss && (
+            <button
+              onClick={onDismiss}
+              aria-label="Dismiss poll result"
+              title="Dismiss"
+              className="ml-auto flex size-4 items-center justify-center rounded text-[var(--text-muted)] hover:bg-[var(--bg-elevated)] hover:text-white"
+            >
+              <X size={11} />
+            </button>
+          )
+        )}
+      </div>
+      <p className="mt-1 text-[12px] font-medium leading-snug text-[var(--text-primary)]">
+        {poll.question}
+      </p>
+
+      <div className="mt-1.5 flex gap-1.5">
+        {poll.options.map((option) => {
+          const n = poll.votes[option] ?? 0;
+          const pctFill = Math.round((n / top) * 100);
+          return (
+            <button
+              key={option}
+              disabled
+              className="relative flex-1 overflow-hidden rounded-sm border border-[var(--border)] px-2 py-1 text-left disabled:opacity-100"
+            >
+              <div
+                className="absolute inset-y-0 left-0 bg-[var(--kick-green)]/20 transition-[width] duration-500"
+                style={{ width: `${pctFill}%` }}
+              />
+              <span className="relative flex items-baseline justify-between gap-2">
+                <span className="text-[12px] font-semibold text-[var(--text-primary)]">
+                  {option}
+                </span>
+                <span className="tnum shrink-0 text-[10px] text-[var(--text-secondary)]">
+                  {n}
+                  {total >= MIN_FOR_PCT && (
+                    <span className="text-[var(--text-muted)]"> · {Math.round((n / total) * 100)}%</span>
+                  )}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+        {total === 0
+          ? live
+            ? 'no votes yet — the prompt is in chat'
+            : 'no one voted'
+          : `${poll.voters} viewer${poll.voters === 1 ? '' : 's'} voted · one vote each` +
+            (total < MIN_FOR_PCT ? ' · too few to read as a split' : '')}
+      </p>
+    </div>
+  );
+}
 
 /** Deterministic per-user colour, so the same chatter keeps the same one. */
 function hue(name: string) {
@@ -123,12 +233,20 @@ function Row({ m, isBot }: { m: ChatFrame; isBot: boolean }) {
   );
 }
 
-export default function Chat({ messages, lastBot, participation, viewers, frameless = false }: {
+export default function Chat({
+  messages, lastBot, participation, viewers, poll = null, closedPoll = null, onDismissPoll,
+  frameless = false,
+}: {
   messages: ChatFrame[];
   /** survives eviction from the chat window — see the note in useGambit */
   lastBot: ChatFrame | null;
   participation?: number;
   viewers?: number | null;
+  /** The open chat_poll/quiz window, if any — takes over the pinned-banner slot. */
+  poll?: PollFrame | null;
+  /** The most recently closed poll/quiz, if the streamer hasn't dismissed it yet. */
+  closedPoll?: ClosedPoll | null;
+  onDismissPoll?: () => void;
   /** Drop the card frame and header — for hosts that supply their own chrome. */
   frameless?: boolean;
 }) {
@@ -194,8 +312,14 @@ export default function Chat({ messages, lastBot, participation, viewers, framel
 
       {/* Kick has no pinned messages (002), so our own line scrolls away within seconds —
           fast at 30x, but true on a busy live channel too. Pin the latest one ourselves,
-          or the ACT step leaves no trace the streamer can point at. */}
-      {lastBot && (
+          or the ACT step leaves no trace the streamer can point at. While a chat_poll/quiz
+          window is open (or just closed and not yet dismissed), that last line IS the poll,
+          so this slot shows the tally instead of repeating the question with no vote bars. */}
+      {poll ? (
+        <PollBanner poll={poll} closesInS={poll.closes_in_s} />
+      ) : closedPoll ? (
+        <PollBanner poll={closedPoll} onDismiss={onDismissPoll} />
+      ) : lastBot && (
         <div className="shrink-0 border-b border-[var(--border)] px-2 py-1.5"
           style={{ background: 'rgba(83,252,24,0.06)' }}>
           <div className="flex items-center gap-1.5">

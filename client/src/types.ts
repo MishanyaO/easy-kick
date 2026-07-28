@@ -44,6 +44,7 @@ export type ContextFrame = {
   participation: number; // unique chatters / viewers — the primary metric
   unique_chatters: number;
   msgs_per_min: number;
+  actions_per_min: number; // comments + reactions (redemptions, gifts) — same window
   uptime_s: number;
   streamer_speaking?: boolean;
 };

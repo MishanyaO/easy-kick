@@ -1,15 +1,14 @@
 import { ExternalLink, LineChart, MessageCircleQuestion } from 'lucide-react';
 import Panel from './Panel';
-import Spark from '../components/Spark';
 import ApprovalCard from '../components/ApprovalCard';
 import type { GambitState } from '../useGambit';
 
 /**
  * Ours, docked in the slot Kick's own (and, for us, permanently empty) Mod Actions panel
- * used to occupy: a mini graph for proof of life, then a scrollable list of what needs or
- * had the streamer's attention — the pending approval on top when there is one, followed by
- * chat_digest history. Closed windows and their verdicts live in Activity Feed instead;
- * this panel is about now and about-to-be-missed, not about history.
+ * used to occupy: a scrollable list of what needs or had the streamer's attention — the
+ * pending approval on top when there is one, followed by chat_digest history. The ambient
+ * graphs live in Session Info now; closed windows and their verdicts live in Activity Feed
+ * instead — this panel is about now and about-to-be-missed, not about history.
  */
 export default function Insights({ s, onDecide }: {
   s: GambitState;
@@ -36,10 +35,6 @@ export default function Insights({ s, onDecide }: {
         </a>
       }
     >
-      <div className="shrink-0 border-b border-[var(--border)] px-3 py-2 opacity-70">
-        <Spark data={s.spark} />
-      </div>
-
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
         {empty ? (
           <div className="flex h-full items-center justify-center px-4 text-center">

@@ -64,7 +64,12 @@ export default function KickDashboard() {
               the column overflows, and a squeezed panel clips its own header. */}
           <div className="flex min-h-0 flex-col gap-1 overflow-y-auto">
             <div className="shrink-0">
-              <SessionInfo context={s.context} live={gymStatus === 'running'} />
+              <SessionInfo
+                context={s.context}
+                live={gymStatus === 'running'}
+                viewerSpark={s.viewerSpark}
+                actionsSpark={s.actionsSpark}
+              />
             </div>
 
             {/* Aspect, not a fixed height — a short wide box crops the banner. */}

@@ -128,6 +128,7 @@ class Controller:
                 metrics.participation,
                 metrics.unique_chatters,
                 metrics.msgs_per_min,
+                metrics.actions_per_min,
             ),
         )
         # Only once the prompt is actually in chat: a card still waiting for the streamer's

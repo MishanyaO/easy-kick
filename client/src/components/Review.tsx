@@ -214,7 +214,7 @@ function Tile({ k, label, set, active, onSelect }: {
   );
 }
 
-/** One of the three live trends: viewers, engagement (msgs/min) and unique engaging viewers. */
+/** One of the live trends: viewers, engagement (msgs/min) and unique engaging viewers. */
 function Trend({ label, value, data, color }: {
   label: string; value: string; data: number[]; color: string;
 }) {

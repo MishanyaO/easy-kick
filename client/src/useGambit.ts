@@ -35,6 +35,8 @@ export type GambitState = {
   engagementSpark: number[];
   /** unique chatters over time — "unique engaging viewers" */
   chattersSpark: number[];
+  /** comments + reactions (redemptions, gifts) over time — Session Info's activity graph */
+  actionsSpark: number[];
   /** our own most recent chat line. Held OUTSIDE the chat window on purpose: the window
    *  turns over in seconds, and Kick has no pinned messages, so deriving this from the
    *  visible messages means the proof of the ACT step vanishes almost immediately. */
@@ -59,7 +61,7 @@ const MAX_DIGESTS = 20;
 
 const EMPTY: GambitState = {
   connected: false, chat: [], context: null, spark: [], viewerSpark: [], engagementSpark: [],
-  chattersSpark: [], lastBot: null,
+  chattersSpark: [], actionsSpark: [], lastBot: null,
   pending: null, inflight: {}, results: [], bandit: null, poll: null, closedPoll: null,
   digests: [],
 };
@@ -111,6 +113,7 @@ function reduce(s: GambitState, m: Msg): GambitState {
         viewerSpark: [...s.viewerSpark.slice(-MAX_SPARK + 1), f.viewer_count ?? 0],
         engagementSpark: [...s.engagementSpark.slice(-MAX_SPARK + 1), f.msgs_per_min],
         chattersSpark: [...s.chattersSpark.slice(-MAX_SPARK + 1), f.unique_chatters],
+        actionsSpark: [...s.actionsSpark.slice(-MAX_SPARK + 1), f.actions_per_min],
       };
 
     case 'action':

@@ -1,7 +1,8 @@
 // One SSE subscription, one reducer, one state object for both surfaces.
 import { useEffect, useReducer, useRef } from 'react';
 import type {
-  ActionFrame, BanditFrame, ChatFrame, ContextFrame, DigestFrame, Frame, PollFrame, ResultFrame,
+  ActionFrame, Arm, Autonomy, BanditFrame, ChatFrame, ContextFrame, DigestFrame, Frame,
+  PollFrame, ResultFrame,
 } from './types';
 
 /** The bot's username in chat, live and in the gym. */
@@ -209,4 +210,16 @@ export const gym = {
   pause: () => fetch(`${API_BASE}/dev/gym/pause`, { method: 'POST' }),
   stop: () => fetch(`${API_BASE}/dev/gym`, { method: 'DELETE' }),
   status: () => fetch(`${API_BASE}/dev/gym`).then((r) => r.json()),
+};
+
+export type Policy = { enabled: boolean; autonomy: Record<Arm, Autonomy> };
+
+export const controller = {
+  policy: (): Promise<Policy> => fetch(`${API_BASE}/controller/policy`).then((r) => r.json()),
+  setAutonomy: (body: { enabled?: boolean; autonomy?: Partial<Record<Arm, Autonomy>> }) =>
+    fetch(`${API_BASE}/controller/autonomy`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => r.json()),
 };

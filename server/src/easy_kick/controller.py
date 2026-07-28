@@ -42,7 +42,7 @@ SCAN_LIMIT = 200  # how far back the copy helpers look for a question or a new c
 
 DEFAULT_AUTONOMY = {
     Arm.NOTHING: Autonomy.AUTO,
-    Arm.EMOTE_RALLY: Autonomy.AUTO,  # spends nothing but a chat line
+    Arm.EMOTE_RALLY: Autonomy.ASK,  # still a line in the streamer's chat; theirs to approve
     Arm.CHAT_POLL: Autonomy.ASK,  # occupies chat's attention
     Arm.QUIZ: Autonomy.ASK,  # occupies chat's attention
     Arm.PREDICTION: Autonomy.ASK,  # stakes viewers' Channel Points. Not ours to spend

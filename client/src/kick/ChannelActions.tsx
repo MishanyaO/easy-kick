@@ -36,7 +36,7 @@ const SECTIONS: { heading: string; rows: Row[] }[] = [
     heading: "Gambit",
     rows: [
       { label: "Suggestions", kind: "toggle", on: true },
-      { label: "Autonomy", kind: "chevron", value: "Ask first" },
+      { label: "Auto approve", kind: "toggle" },
       { label: "Cooldown", kind: "chevron", value: "90s" },
       { label: "Quiet hours", kind: "chevron", value: "Off" },
     ],
@@ -99,9 +99,9 @@ function Toggle({ on }: { on: boolean }) {
 }
 
 /** Kick's channel settings list, for chrome only, plus our Gambit pre-set — "Suggestions",
- *  the mode switch and per-arm rate sliders, and the "Chat digest" toggle actually drive the
- *  controller (`GET`/`PUT /controller/autonomy`). Everything below "Tactics" is inert Kick
- *  chrome; nothing there is ours to wire up. */
+ *  "Auto approve", the mode switch and per-arm rate sliders, and the "Chat digest" toggle
+ *  actually drive the controller (`GET`/`PUT /controller/autonomy`). Everything below
+ *  "Tactics" is inert Kick chrome; nothing there is ours to wire up. */
 export default function ChannelActions() {
   const [enabled, setEnabled] = useState(true)
   const [autonomy, setAutonomy] = useState<Partial<Record<Arm, Autonomy>>>({})
@@ -138,6 +138,21 @@ export default function ChannelActions() {
       .catch(() => undefined)
   }
 
+  // "Auto approve" is a master toggle over the arms that default to `ask` — on fires them
+  // without a card, off restores the ask-first behavior. Arms individually set to `off`
+  // are left alone; this never turns an off arm on.
+  const autoApproveOn = RATE_ARMS.every((arm) => autonomy[arm] !== "ask")
+  const toggleAutoApprove = () => {
+    const next: Autonomy = autoApproveOn ? "ask" : "auto"
+    const patch = Object.fromEntries(
+      RATE_ARMS.filter((arm) => autonomy[arm] !== "off").map((arm) => [arm, next]),
+    )
+    void controller
+      .setAutonomy({ autonomy: patch })
+      .then((p) => setAutonomy(p.autonomy))
+      .catch(() => undefined)
+  }
+
   const setModeAndSave = (next: Mode) => {
     setMode(next)
     void controller.setAutonomy({ mode: next }).catch(() => undefined)
@@ -150,6 +165,7 @@ export default function ChannelActions() {
 
   const isOn = (r: Row): boolean => {
     if (r.label === "Suggestions") return enabled
+    if (r.label === "Auto approve") return autoApproveOn
     if (r.arm) return autonomy[r.arm] !== "off"
     return !!r.on
   }
@@ -176,7 +192,7 @@ export default function ChannelActions() {
           </h3>
           {s.rows.map((r) => {
             const on = isOn(r)
-            const wired = r.label === "Suggestions" || !!r.arm
+            const wired = r.label === "Suggestions" || r.label === "Auto approve" || !!r.arm
             return (
               <div
                 key={r.label}
@@ -199,7 +215,15 @@ export default function ChannelActions() {
                     <button
                       type="button"
                       aria-label={`Toggle ${r.label}`}
-                      onClick={wired ? () => (r.arm ? toggleArm(r.arm) : toggleSuggestions()) : undefined}
+                      onClick={
+                        wired
+                          ? () => {
+                              if (r.arm) return toggleArm(r.arm)
+                              if (r.label === "Auto approve") return toggleAutoApprove()
+                              return toggleSuggestions()
+                            }
+                          : undefined
+                      }
                       disabled={!wired}
                     >
                       <Toggle on={on} />

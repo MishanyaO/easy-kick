@@ -3,6 +3,8 @@ import Panel, { PanelButton } from './Panel';
 
 type GymStatus = 'idle' | 'running' | 'paused';
 
+const SPEEDS = [1, 5, 50];
+
 /**
  * Kick's "Stream info" panel. The stream details are static chrome; the gym
  * control rides along at the bottom, since this panel is where you'd go to
@@ -14,11 +16,15 @@ type GymStatus = 'idle' | 'running' | 'paused';
  */
 export default function StreamInfo({
   gymStatus,
+  gymSpeed,
+  onChangeGymSpeed,
   onStartGym,
   onPauseGym,
   onStopGym,
 }: {
   gymStatus: GymStatus;
+  gymSpeed: number;
+  onChangeGymSpeed: (speed: number) => void;
   onStartGym: () => void;
   onPauseGym: () => void;
   onStopGym: () => void;
@@ -61,6 +67,21 @@ export default function StreamInfo({
           />
           Gym{gymStatus === 'paused' ? ' (paused)' : ''}
         </span>
+        <div className="flex gap-0.5 rounded bg-[var(--bg-surface)] p-0.5">
+          {SPEEDS.map((sp) => (
+            <button
+              key={sp}
+              onClick={() => onChangeGymSpeed(sp)}
+              className={`flex-1 rounded py-1 text-xs font-semibold transition-colors hover:text-white ${
+                gymSpeed === sp
+                  ? 'bg-[var(--bg-elevated)] text-white'
+                  : 'text-[var(--text-muted)]'
+              }`}
+            >
+              {sp}x
+            </button>
+          ))}
+        </div>
         <div className="flex gap-2">
           <button
             onClick={gymOn ? onPauseGym : onStartGym}

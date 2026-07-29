@@ -121,6 +121,18 @@ async def gym_status(request: Request) -> dict:
     return request.app.state.gym.status()
 
 
+@gym_router.patch("/speed")
+async def set_gym_speed(request: Request, speed: float = Query(..., gt=0, le=100)) -> dict:
+    """Change the tick rate in place. `_run_gym`'s loop re-reads `state.speed` on every
+    iteration, so this takes effect on the very next tick — no restart needed."""
+    state: GymState = request.app.state.gym
+    if state.gym is None:
+        raise HTTPException(status_code=409, detail="no gym to adjust")
+    state.speed = speed
+    logger.info("gym speed changed to %s", speed)
+    return state.status()
+
+
 @gym_router.post("/pause")
 async def pause_gym(request: Request) -> dict:
     """Stop ticking without losing the gym, its metrics, or the elapsed uptime."""

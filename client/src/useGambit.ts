@@ -43,6 +43,10 @@ export type GambitState = {
   viewerHistory: number[];
   activeViewersHistory: number[];
   actionsHistory: number[];
+  /** virtual elapsed seconds ("Time Live") at each history sample, for the Insights
+   *  x-axis — the gym runs its own clock, sped up relative to wall time, so real
+   *  timestamps would misrepresent how far apart samples actually are in-session. */
+  historyElapsedS: number[];
   /** our own most recent chat line. Held OUTSIDE the chat window on purpose: the window
    *  turns over in seconds, and Kick has no pinned messages, so deriving this from the
    *  visible messages means the proof of the ACT step vanishes almost immediately. */
@@ -72,7 +76,7 @@ const EMPTY: GambitState = {
   connected: false, chat: [], context: null, spark: [], viewerSpark: [], activeViewersSpark: [],
   engagementSpark: [],
   actionsSpark: [], lastBot: null,
-  viewerHistory: [], activeViewersHistory: [], actionsHistory: [],
+  viewerHistory: [], activeViewersHistory: [], actionsHistory: [], historyElapsedS: [],
   pending: null, inflight: {}, results: [], bandit: null, poll: null, closedPoll: null,
   digests: [], tick: 0,
 };
@@ -132,6 +136,7 @@ function reduce(s: GambitState, m: Msg): GambitState {
         viewerHistory: [...s.viewerHistory, f.viewer_count ?? 0],
         activeViewersHistory: [...s.activeViewersHistory, f.unique_chatters],
         actionsHistory: [...s.actionsHistory, f.msgs_per_min],
+        historyElapsedS: [...s.historyElapsedS, f.uptime_s],
         tick: s.tick + 1,
       };
 
@@ -230,6 +235,10 @@ export const gym = {
     fetch(`${API_BASE}/dev/gym?speed=${speed}&seed=${seed}`, { method: 'POST' }),
   /** Resumes a paused gym in place (same metrics, same "Time Live") if one is paused. */
   pause: () => fetch(`${API_BASE}/dev/gym/pause`, { method: 'POST' }),
+  /** Hot-changes the tick rate of a running or paused gym — no restart, takes effect
+   *  on the next tick. */
+  setSpeed: (speed: number) =>
+    fetch(`${API_BASE}/dev/gym/speed?speed=${speed}`, { method: 'PATCH' }),
   stop: () => fetch(`${API_BASE}/dev/gym`, { method: 'DELETE' }),
   status: () => fetch(`${API_BASE}/dev/gym`).then((r) => r.json()),
 };

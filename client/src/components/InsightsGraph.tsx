@@ -11,9 +11,42 @@ export type Intervention = { index: number; result: ResultFrame & { action?: Act
 const W = 640;
 const MIN_ZOOM_SPAN = 3; // fewer than this and there's nothing meaningful to zoom into
 
+/** "Time Live" style elapsed-time label — matches Session Info's clock, not the
+ *  wall clock, since the gym's virtual time runs faster than real time. */
+function fmt(s: number): string {
+  const p = (n: number) => String(Math.floor(n)).padStart(2, '0');
+  return `${p(s / 3600)}:${p((s % 3600) / 60)}:${p(s % 60)}`;
+}
+
+const TARGET_TICKS = 6;
+// candidate spacings, in virtual seconds — round steps a viewer would actually read off a clock
+const STEPS = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
+
+/** Round-time tick marks (:00, :05, :10, ...) whose spacing widens as the visible span
+ *  grows, so 3 minutes on screen gets per-30s ticks and 3 hours gets per-30min ticks. */
+function timeTicks(from: number, to: number): number[] {
+  const span = to - from;
+  const step = STEPS.find((s) => span / s <= TARGET_TICKS) ?? STEPS[STEPS.length - 1];
+  const ticks: number[] = [];
+  for (let t = Math.ceil(from / step) * step; t <= to; t += step) ticks.push(t);
+  return ticks;
+}
+
+/** Nearest history index to a given elapsed time — elapsed values are monotonic, so a
+ *  linear scan from a good starting guess is enough; no need for a real binary search. */
+function nearestIndex(elapsed: number[], lo: number, hi: number, target: number): number {
+  let best = lo;
+  for (let i = lo; i <= hi; i++) {
+    if (Math.abs(elapsed[i] - target) < Math.abs(elapsed[best] - target)) best = i;
+  }
+  return best;
+}
+
 export default function InsightsGraph({
-  series, interventions, height = 96,
-}: { series: GraphSeries[]; interventions: Intervention[]; height?: number }) {
+  series, interventions, elapsedS, height = 96,
+}: {
+  series: GraphSeries[]; interventions: Intervention[]; elapsedS?: number[]; height?: number;
+}) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [hover, setHover] = useState<number | null>(null);
   const [zoom, setZoom] = useState<[number, number] | null>(null);
@@ -101,12 +134,30 @@ export default function InsightsGraph({
             fill="var(--kick-green)" opacity={0.12} />
         )}
       </svg>
+      {elapsedS && elapsedS.length >= 2 && (
+        <div className="relative mt-1 h-3 text-[9px] text-[var(--text-muted)]">
+          {timeTicks(elapsedS[lo], elapsedS[hi]).map((t) => {
+            const i = nearestIndex(elapsedS, lo, hi, t);
+            return (
+              <span key={t} className="absolute -translate-x-1/2 whitespace-nowrap"
+                style={{ left: `${((i - lo) / (visLen - 1)) * 100}%` }}>
+                {fmt(t)}
+              </span>
+            );
+          })}
+        </div>
+      )}
       {visibleInterventions.filter((iv) => iv.index === hover).map(({ index, result: r }) => (
         <div key={r.action_id}
           className="pointer-events-none absolute top-6 z-10 w-52 -translate-x-1/2 rounded-sm border border-[var(--border)] bg-[var(--bg-elevated)] p-2 text-[11px] shadow-lg"
           style={{ left: `${((index - lo) / (visLen - 1)) * 100}%` }}>
-          <div className="font-semibold" style={{ color: VERDICT_COLOR[labelFor(r)] }}>
-            {labelFor(r)} · {r.arm}
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="font-semibold" style={{ color: VERDICT_COLOR[labelFor(r)] }}>
+              {labelFor(r)} · {r.arm}
+            </span>
+            {elapsedS?.[index] != null && (
+              <span className="shrink-0 text-[9px] text-[var(--text-muted)]">{fmt(elapsedS[index])}</span>
+            )}
           </div>
           {r.action?.body && (
             <div className="mt-0.5 truncate text-[var(--text-secondary)]">“{r.action.body}”</div>

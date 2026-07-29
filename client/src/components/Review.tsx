@@ -265,6 +265,7 @@ export default function Review({ s }: { s: GambitState }) {
             { data: s.actionsHistory, color: 'var(--warn)', label: 'Actions' },
           ]}
           interventions={interventions}
+          elapsedS={s.historyElapsedS}
         />
       </div>
 

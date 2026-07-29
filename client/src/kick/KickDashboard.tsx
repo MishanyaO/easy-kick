@@ -32,6 +32,7 @@ export default function KickDashboard() {
   const s = useGambit();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [gymStatus, setGymStatus] = useState<'idle' | 'running' | 'paused'>('idle');
+  const [gymSpeed, setGymSpeed] = useState(5);
 
   useEffect(() => {
     void gym
@@ -41,7 +42,7 @@ export default function KickDashboard() {
   }, []);
 
   const startGym = async () => {
-    await gym.start(20, 7);
+    await gym.start(gymSpeed, 7);
     setGymStatus('running');
   };
   const pauseGym = async () => {
@@ -52,6 +53,11 @@ export default function KickDashboard() {
     await gym.stop();
     s.reset();
     setGymStatus('idle');
+  };
+  const changeGymSpeed = (speed: number) => {
+    setGymSpeed(speed);
+    // Idle: nothing to hot-change, `speed` just gets picked up on the next Start.
+    if (gymStatus !== 'idle') void gym.setSpeed(speed);
   };
 
   return (
@@ -123,6 +129,8 @@ export default function KickDashboard() {
           <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-1">
             <StreamInfo
               gymStatus={gymStatus}
+              gymSpeed={gymSpeed}
+              onChangeGymSpeed={changeGymSpeed}
               onStartGym={() => void startGym()}
               onPauseGym={() => void pauseGym()}
               onStopGym={() => void stopGym()}

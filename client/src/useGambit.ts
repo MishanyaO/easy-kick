@@ -32,10 +32,10 @@ export type GambitState = {
   spark: number[];
   /** viewer count over time */
   viewerSpark: number[];
+  /** unique chatters over time — the "active viewers" graph, same scale as viewerSpark */
+  activeViewersSpark: number[];
   /** msgs/min over time — the "engagement" graph */
   engagementSpark: number[];
-  /** unique chatters over time — "unique engaging viewers" */
-  chattersSpark: number[];
   /** comments + reactions (redemptions, gifts) over time — Session Info's activity graph */
   actionsSpark: number[];
   /** our own most recent chat line. Held OUTSIDE the chat window on purpose: the window
@@ -61,8 +61,9 @@ export type GambitState = {
 const MAX_DIGESTS = 20;
 
 const EMPTY: GambitState = {
-  connected: false, chat: [], context: null, spark: [], viewerSpark: [], engagementSpark: [],
-  chattersSpark: [], actionsSpark: [], lastBot: null,
+  connected: false, chat: [], context: null, spark: [], viewerSpark: [], activeViewersSpark: [],
+  engagementSpark: [],
+  actionsSpark: [], lastBot: null,
   pending: null, inflight: {}, results: [], bandit: null, poll: null, closedPoll: null,
   digests: [],
 };
@@ -116,8 +117,8 @@ function reduce(s: GambitState, m: Msg): GambitState {
         context: f,
         spark: [...s.spark.slice(-MAX_SPARK + 1), f.participation],
         viewerSpark: [...s.viewerSpark.slice(-MAX_SPARK + 1), f.viewer_count ?? 0],
+        activeViewersSpark: [...s.activeViewersSpark.slice(-MAX_SPARK + 1), f.unique_chatters],
         engagementSpark: [...s.engagementSpark.slice(-MAX_SPARK + 1), f.msgs_per_min],
-        chattersSpark: [...s.chattersSpark.slice(-MAX_SPARK + 1), f.unique_chatters],
         actionsSpark: [...s.actionsSpark.slice(-MAX_SPARK + 1), f.actions_per_min],
       };
 

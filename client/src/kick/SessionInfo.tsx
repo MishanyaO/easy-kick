@@ -13,6 +13,7 @@ function elapsed(seconds: number): string {
 
 const VIEWERS_COLOR = '#6aa9ff';
 const ACTIONS_COLOR = 'var(--warn)';
+const ACTIVE_VIEWERS_COLOR = 'var(--kick-green)';
 
 /**
  * Kick's "Session Info" strip. The cells are Kick's; the numbers are the
@@ -24,11 +25,13 @@ export default function SessionInfo({
   context,
   live,
   viewerSpark,
+  activeViewersSpark,
   actionsSpark,
 }: {
   context: ContextFrame | null;
   live: boolean;
   viewerSpark: GambitState['viewerSpark'];
+  activeViewersSpark: GambitState['activeViewersSpark'];
   actionsSpark: GambitState['actionsSpark'];
 }) {
   const cells: [string, string][] = [
@@ -76,6 +79,13 @@ export default function SessionInfo({
               </span>
             </span>
             <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
+              <span className="size-1.5 rounded-full" style={{ background: ACTIVE_VIEWERS_COLOR }} />
+              Active Viewers
+              <span className="tnum text-white">
+                {context ? context.unique_chatters : '-'}
+              </span>
+            </span>
+            <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
               <span className="size-1.5 rounded-full" style={{ background: ACTIONS_COLOR }} />
               Actions
               <span className="tnum text-white">
@@ -86,7 +96,8 @@ export default function SessionInfo({
           <MultiSpark
             height={26}
             series={[
-              { data: viewerSpark, color: VIEWERS_COLOR },
+              { data: viewerSpark, color: VIEWERS_COLOR, scaleGroup: 'viewers' },
+              { data: activeViewersSpark, color: ACTIVE_VIEWERS_COLOR, scaleGroup: 'viewers' },
               { data: actionsSpark, color: ACTIONS_COLOR },
             ]}
           />

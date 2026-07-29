@@ -272,12 +272,9 @@ export default function Review({ s }: { s: GambitState }) {
         <Trend label="VIEWERS" color="var(--kick-green)"
           value={s.context?.viewer_count != null ? String(s.context.viewer_count) : '—'}
           data={s.viewerSpark} />
-        <Trend label="ENGAGEMENT" color="var(--warn)"
+        <Trend label="ACTIONS" color="var(--warn)"
           value={s.context ? `${s.context.msgs_per_min.toFixed(1)}/min` : '—'}
           data={s.engagementSpark} />
-        <Trend label="UNIQUE VIEWERS" color="#6aa9ff"
-          value={s.context ? String(s.context.unique_chatters) : '—'}
-          data={s.chattersSpark} />
       </div>
 
       {tab === 'tactics' ? (

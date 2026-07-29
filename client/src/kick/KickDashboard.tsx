@@ -69,6 +69,7 @@ export default function KickDashboard() {
                 context={s.context}
                 live={gymStatus === 'running'}
                 viewerSpark={s.viewerSpark}
+                activeViewersSpark={s.activeViewersSpark}
                 actionsSpark={s.actionsSpark}
               />
             </div>

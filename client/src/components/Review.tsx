@@ -6,7 +6,7 @@
 // scannable by someone mid-stream, and the depth has to be one click away rather than
 // spread across every row at once.
 import { useState, type ReactNode } from 'react';
-import { ChevronRight, FlaskConical, Radar } from 'lucide-react';
+import { ChevronRight, Radar } from 'lucide-react';
 import type { GambitState } from '../useGambit';
 import {
   ARM_LABEL, NOISE_BAND, STATE_LABEL, VERDICT_COLOR, labelFor, isControl, points, pct,
@@ -14,10 +14,16 @@ import {
   type Arm, type ChatState, type VerdictLabel,
 } from '../types';
 import InsightsGraph from './InsightsGraph';
+import PolicyMap from './PolicyMap';
 import ResultDetail, { type History, type LedgerRow } from './ResultDetail';
 
 type Row = LedgerRow;
 type Filter = 'all' | ChatState;
+type Tab = 'actions' | 'tactics';
+
+/** `tactics` stays the state key — the tab is still where you go to ask "what works?" —
+ *  but the surface behind it is a map of beliefs now, and "Tactics" undersold it. */
+const TABS: [Tab, string][] = [['actions', 'Actions'], ['tactics', 'Policy map']];
 
 /**
  * Every group starts collapsed, and the header has to survive that.
@@ -35,7 +41,6 @@ const GROUPS: { verdict: VerdictLabel; blurb: string }[] = [
 ];
 
 const STATES: ChatState[] = ['lull', 'steady', 'spike'];
-const ARM_COLORS = ['var(--kick-green)', 'var(--warn)', 'var(--text-secondary)', '#6aa9ff', '#ff7ad9'];
 /** A tactic needs this many tries in a state before its average is worth reading aloud. */
 const MIN_TRIES = 2;
 
@@ -240,122 +245,6 @@ function Empty({ icon, kicker, title, blurb, steps }: {
   );
 }
 
-function TacticsTab({ s }: { s: GambitState }) {
-  const posteriors = s.bandit?.posteriors ?? [];
-  if (!posteriors.length) {
-    return (
-      <Empty
-        icon={<FlaskConical size={18} />}
-        kicker="NOTHING LEARNED YET"
-        title="Three experiments, fifteen cells"
-        blurb="Every chat state runs its own experiment, and tactics are only ever compared within one — a spike always out-chats a lull, so ranking across states would measure the state, not the tactic."
-        steps={[
-          ['3 states × 5 tactics', 'lull, steady and spike, each holding a posterior per tactic'],
-          ['Silence is one of the five', 'the “nothing” tactic holds its own posterior, and every intervention pays a cost — quiet has to be beaten on evidence'],
-          ['The table appears after the first decision', 'run the gym to fill it in minutes instead of hours'],
-        ]}
-      />
-    );
-  }
-  return (
-    // Cards where there is room, one column where there is not — and keyed to the CONTAINER,
-    // not the viewport. That distinction is why this was flattened before: `xl:grid-cols-2`
-    // tracks the window, so a wide screen forced two columns into the 30%-wide dashboard
-    // panel. `@container` asks the host how much room it actually gave us.
-    <div className="@container min-h-0 flex-1 overflow-y-auto pr-1">
-      <div className="grid grid-cols-1 items-start gap-4 @3xl:grid-cols-2">
-      {STATES.map((state) => {
-        const arms = posteriors.filter((p) => p.state === state)
-          .sort((a, b) => b.mean - a.mean);
-        const tried = arms.filter((a) => a.pulls > 0);
-        const best = tried[0];
-        return (
-          <section key={state}
-            className="flex shrink-0 flex-col rounded-sm border border-[var(--border)] bg-[var(--bg-elevated)] p-3">
-            <div className="flex items-baseline gap-2">
-              <span className="text-[11px] font-bold tracking-[0.2em] text-[var(--text-secondary)]">
-                {STATE_LABEL[state]}
-              </span>
-              <span className="text-[10px] text-[var(--text-muted)]">
-                {tried.reduce((n, a) => n + a.pulls, 0)} pulls · {tried.length}/{arms.length} tactics tried
-              </span>
-            </div>
-
-            <div className="mt-2.5 rounded-sm border px-3 py-2"
-              style={{ borderColor: best ? 'var(--kick-green)' : 'var(--border)' }}>
-              <span className="text-[9px] font-bold tracking-[0.2em] text-[var(--text-muted)]">
-                LEADING HERE
-              </span>
-              <div className="text-[14px] font-semibold text-[var(--text-primary)]">
-                {best ? best.arm : 'no evidence yet'}
-              </div>
-              {best && (
-                <div className="text-[10px] text-[var(--text-muted)]">
-                  posterior mean {best.mean.toFixed(2)} over {best.pulls} pull{best.pulls === 1 ? '' : 's'}
-                </div>
-              )}
-            </div>
-
-            <div className="mt-3 space-y-1.5">
-              {arms.map((a, i) => (
-                <div key={a.arm} className="flex items-center gap-2">
-                  <span className="flex w-28 shrink-0 items-center gap-1.5">
-                    <span className="h-2.5 w-2.5 shrink-0 rounded-full"
-                      style={{ background: a.pulls ? ARM_COLORS[i % ARM_COLORS.length] : 'transparent',
-                        border: a.pulls ? undefined : '1px solid var(--text-muted)' }} />
-                    <span className="truncate text-[12px] text-[var(--text-primary)]">{a.arm}</span>
-                  </span>
-                  <div className="h-1.5 flex-1 rounded-sm bg-[var(--bg-surface)]">
-                    <div className="h-1.5 rounded-sm bg-[var(--kick-green)]"
-                      style={{ width: `${a.mean * 100}%` }} />
-                  </div>
-                  <span className="tnum w-12 shrink-0 text-right text-[12px] font-bold text-[var(--text-primary)]">
-                    {a.mean.toFixed(2)}
-                  </span>
-                  <span className="tnum w-16 shrink-0 text-right text-[10px] text-[var(--text-muted)]">
-                    {a.pulls ? `${a.pulls} pulls` : 'untried'}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </section>
-        );
-      })}
-
-      <section className="flex shrink-0 flex-col rounded-sm border border-[var(--border)] bg-[var(--bg-elevated)] p-3">
-        <span className="text-[11px] font-bold tracking-[0.2em] text-[var(--text-secondary)]">
-          HOW THE EXPERIMENT RUNS
-        </span>
-        <div className="mt-3 flex gap-2">
-          <div className="flex-1 rounded-sm bg-[var(--bg-surface)] px-3 py-2">
-            <div className="tnum text-2xl font-bold text-[var(--kick-green)]">
-              {s.bandit?.decisions ?? 0}
-            </div>
-            <div className="text-[10px] text-[var(--text-muted)]">decisions taken</div>
-          </div>
-          <div className="flex-1 rounded-sm bg-[var(--bg-surface)] px-3 py-2">
-            <div className="tnum text-2xl font-bold text-[var(--warn)]">
-              {s.results.filter((r) => r.arm === 'nothing').length}
-            </div>
-            <div className="text-[10px] text-[var(--text-muted)]">chose to stay quiet</div>
-          </div>
-        </div>
-        <p className="mt-3 text-[11px] leading-relaxed text-[var(--text-secondary)]">
-          Each state runs its own experiment. Tactics are only ever compared{' '}
-          <span className="text-[var(--text-primary)]">within</span> a state — a spike always
-          out-chats a lull, so ranking across states would measure the state, not the tactic.
-        </p>
-        <p className="mt-2 text-[11px] leading-relaxed text-[var(--text-muted)]">
-          <span className="text-[var(--text-secondary)]">nothing</span> is a real arm with its
-          own posterior, and every intervention is charged a cost — so silence has to be beaten
-          on evidence, not assumed.
-        </p>
-      </section>
-      </div>
-    </div>
-  );
-}
-
 /**
  * A state summary that doubles as the filter control for the ledger below it — and carries
  * the finding for that state, which is the one thing on this page a streamer can act on
@@ -409,7 +298,7 @@ function Tile({ k, label, set, all, active, onSelect }: {
 }
 
 export default function Review({ s }: { s: GambitState }) {
-  const [tab, setTab] = useState<'actions' | 'tactics'>('actions');
+  const [tab, setTab] = useState<Tab>('actions');
   const [filter, setFilter] = useState<Filter>('all');
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -452,12 +341,12 @@ export default function Review({ s }: { s: GambitState }) {
           </div>
         </div>
         <div className="ml-auto flex gap-0.5 rounded-sm border border-[var(--border)] p-0.5">
-          {(['actions', 'tactics'] as const).map((k) => (
+          {TABS.map(([k, label]) => (
             <button key={k} onClick={() => setTab(k)}
-              className={`rounded-md px-3 py-1.5 text-[12px] font-semibold capitalize ${
+              className={`rounded-md px-3 py-1.5 text-[12px] font-semibold ${
                 tab === k ? 'bg-[var(--bg-elevated)] text-[var(--text-primary)]' : 'text-[var(--text-muted)]'
               }`}>
-              {k}
+              {label}
             </button>
           ))}
         </div>
@@ -477,7 +366,7 @@ export default function Review({ s }: { s: GambitState }) {
       </div>
 
       {tab === 'tactics' ? (
-        <div className="mt-4 flex min-h-0 flex-1 flex-col"><TacticsTab s={s} /></div>
+        <div className="mt-4 flex min-h-0 flex-1 flex-col"><PolicyMap s={s} /></div>
       ) : s.results.length === 0 ? (
         // Before the filter tiles, not under them: four tiles of +0.0 pts read as a broken
         // dashboard, where the same emptiness explained reads as a system waiting to run.

@@ -31,13 +31,15 @@ from .models import (
     Mode,
     TrialOrigin,
 )
-from .reward import Outcome, RewardBook, Window
+from .reward import CONTAMINATION_S, Outcome, RewardBook, Window
 from .store import EventStore
 
 logger = logging.getLogger("kick.controller")
 
 TICK_S = 5.0
-COOLDOWN_S = 90.0  # one open window at a time, and a quiet gap after every fire
+# The tick is added because decisions only happen on the 5s grid: landing exactly on the
+# boundary would leave it to float comparison.
+COOLDOWN_S = CONTAMINATION_S + TICK_S
 ARM_CAP_PER_HOUR = 4
 PROMOTE_AFTER_APPROVALS = 5
 SCAN_LIMIT = 200  # how far back the copy helpers look for a question or a new chatter

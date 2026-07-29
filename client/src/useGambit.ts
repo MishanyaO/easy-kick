@@ -1,8 +1,9 @@
 // One SSE subscription, one reducer, one state object for both surfaces.
 import { useEffect, useReducer, useRef } from 'react';
+import { cellKey } from './types';
 import type {
-  ActionFrame, Arm, Autonomy, BanditFrame, ChatFrame, ClosedPoll, ContextFrame, DigestFrame,
-  Frame, Mode, PollFrame, ResultFrame,
+  ActionFrame, Arm, Autonomy, BanditFrame, Belief, ChatFrame, ClosedPoll, ContextFrame,
+  DigestFrame, Frame, Mode, PollFrame, ResultFrame,
 } from './types';
 export type { ClosedPoll } from './types';
 
@@ -59,6 +60,18 @@ export type GambitState = {
    *  it closed under, even after that spark's window has scrolled */
   tick: number;
   bandit: BanditFrame | null;
+  /** Every posterior after each bandit frame, keyed `state|arm`.
+   *
+   *  The backend sends a snapshot of the table and never a history, but "it learned" is a
+   *  claim about the *sequence* — beliefs that started identical and pulled apart as
+   *  evidence arrived. A still frame of the current table cannot make that claim, so the
+   *  client keeps the sequence it was streamed.
+   *
+   *  Raw α/β rather than a mean: the readable quantity is one belief compared against
+   *  another, which needs both distributions and not two summary numbers. Every cell is
+   *  appended on every frame, so trails are index-aligned and can be zipped. Cleared by
+   *  `reset` with everything else. */
+  banditTrail: Record<string, Belief[]>;
   /** the poll currently taking votes, if the open window has one */
   poll: PollFrame | null;
   /** the most recently closed poll/quiz's final split, if the streamer hasn't dismissed it
@@ -78,9 +91,13 @@ const EMPTY: GambitState = {
   engagementSpark: [],
   actionsSpark: [], lastBot: null,
   viewerHistory: [], activeViewersHistory: [], actionsHistory: [], historyElapsedS: [],
-  pending: null, inflight: {}, seen: {}, results: [], bandit: null, poll: null, closedPoll: null,
-  digests: [], tick: 0,
+  pending: null, inflight: {}, seen: {}, results: [], bandit: null, banditTrail: {},
+  poll: null, closedPoll: null, digests: [], tick: 0,
 };
+
+/** Samples of each belief kept for the policy map. A bandit frame lands on every decision
+ *  and every window close, so this is a few hundred decisions' worth. */
+const MAX_TRAIL = 300;
 
 /** Insertion-ordered and bounded: string ids keep their insertion order in a JS object,
  *  so dropping the oldest is a slice of the key list. */
@@ -196,8 +213,23 @@ function reduce(s: GambitState, m: Msg): GambitState {
       };
     }
 
-    case 'bandit':
-      return { ...s, bandit: f };
+    case 'bandit': {
+      const banditTrail = { ...s.banditTrail };
+      for (const p of f.posteriors) {
+        const prev = banditTrail[cellKey(p.state, p.arm)] ?? [];
+        const next = [...prev, { alpha: p.alpha, beta: p.beta }];
+        banditTrail[cellKey(p.state, p.arm)] =
+          next.length > MAX_TRAIL ? next.slice(next.length - MAX_TRAIL) : next;
+      }
+      return {
+        ...s,
+        // Only the frame published at a decision carries `last_decision`; the one at window
+        // close does not. Replacing wholesale would blank the draw a second after it
+        // happened, which is precisely the moment worth looking at.
+        bandit: f.last_decision ? f : { ...f, last_decision: s.bandit?.last_decision },
+        banditTrail,
+      };
+    }
 
     case 'digest':
       return { ...s, digests: [f, ...s.digests].slice(0, MAX_DIGESTS) };

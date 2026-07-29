@@ -5,7 +5,7 @@ from easy_kick.context import StreamContext
 from easy_kick.controller import COOLDOWN_S, Controller
 from easy_kick.engagement import EngagementMonitor
 from easy_kick.models import BANDIT_ARMS, Arm, Autonomy, ChatState, EventEnvelope, EventType, Mode
-from easy_kick.reward import WINDOW_S, RewardBook
+from easy_kick.reward import CONTAMINATION_S, WINDOW_S, RewardBook
 from easy_kick.store import EventStore
 
 
@@ -85,19 +85,36 @@ def test_a_decision_fires_opens_a_window_and_scores_it_on_close():
     assert results(frames)[0]["contaminated"] is None
 
 
-def test_a_trial_in_the_previous_actions_shadow_does_not_train():
+def test_the_cooldown_covers_the_previous_actions_contamination_shadow():
+    """The rails, not luck, are what keep a window readable.
+
+    A window opening inside the last fire's shadow is unattributable by construction, so
+    the quiet gap after a fire has to outlast the shadow. It didn't — the cooldown was 90s
+    against a 120s shadow — and the arithmetic made *every* decision following a fire come
+    back "can't tell". Worse, a contaminated quiet window is barred from the control pool,
+    so the fires also starved the controls everything else was measured against.
+
+    RewardBook still refuses to attribute a shadowed window on its own (test_reward.py);
+    this is the rail that stops the controller handing it one.
+    """
+    assert COOLDOWN_S >= CONTAMINATION_S
+
     controller, bandit, _, _, frames, _ = build()
     prime_control(controller)
 
     controller.tick(1000)
     controller.tick(1000 + WINDOW_S)
     assert len(bandit.updates) == 1
+    assert results(frames)[0]["contaminated"] is None
 
-    controller.tick(1091)  # past the 90s cooldown, still inside the 120s shadow
-    controller.tick(1091 + WINDOW_S)
+    # Inside the shadow: no decision is taken at all now, rather than one taken and voided.
+    controller.tick(1000 + CONTAMINATION_S - 1)
+    assert len(results(frames)) == 1
 
-    assert len(bandit.updates) == 1
-    assert results(frames)[1]["contaminated"]
+    controller.tick(1000 + COOLDOWN_S)
+    controller.tick(1000 + COOLDOWN_S + WINDOW_S)
+    assert len(bandit.updates) == 2
+    assert results(frames)[1]["contaminated"] is None
 
 
 def test_nothing_decisions_still_open_a_window_and_update_the_posterior():

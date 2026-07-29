@@ -111,16 +111,27 @@ export type Posterior = {
   pulls: number;
 };
 
+/** One Thompson draw, as it happened. The samplers' numbers are the interesting part: the
+ *  policy is "roll one number out of each belief, play the highest", and a wide belief
+ *  rolls wild — which is the entire reason the thing explores at all. */
+export type LastDecision = {
+  state: ChatState;
+  /** One Beta draw per *eligible* arm — rails can take arms off the table, so this is a
+   *  partial record and code that indexes it must expect holes. */
+  samples: Partial<Record<Arm, number>>;
+  chosen: Arm;
+  propensity: number;
+  eligible?: Arm[];
+  /** The control was taken deliberately, not won. A fixed share of decisions are reserved
+   *  as clean quiet windows — without them there is nothing to measure a lift against. */
+  forced_control?: boolean;
+};
+
 export type BanditFrame = {
   type: 'bandit';
   decisions: number;
   posteriors: Posterior[];
-  last_decision?: {
-    state: ChatState;
-    samples: Record<Arm, number>;
-    chosen: Arm;
-    propensity: number;
-  };
+  last_decision?: LastDecision;
 };
 
 export type ControllerResetFrame = {
@@ -300,6 +311,68 @@ export function whyThisArm(
   }
   return { mode: 'explore', text: `no evidence in a ${state} yet — this is the first read` };
 }
+
+/**
+ * Below this many pulls the sampler ignores a cell and draws the flat prior instead —
+ * mirrors `MIN_PULLS` in bandit.py. A cell under it has evidence but is not yet trusted,
+ * and showing its mean as if it were a finding is how a demo ends up claiming a result off
+ * a single window.
+ */
+export const MIN_PULLS = 3;
+
+/**
+ * How unsure a Beta(α, β) still is.
+ *
+ * The mean is what Gambit believes; this is how far that belief would move if the next
+ * window disagreed. It is the half of the picture a table of means drops, and the half
+ * that makes learning visible — the number shrinks as evidence lands.
+ */
+export const betaSd = (alpha: number, beta: number) =>
+  Math.sqrt((alpha * beta) / ((alpha + beta) ** 2 * (alpha + beta + 1)));
+
+/** One (state, arm) cell of the policy table. */
+export const cellKey = (state: ChatState, arm: Arm) => `${state}|${arm}`;
+
+/** Standard normal CDF — Abramowitz & Stegun 26.2.17, accurate to ~7e-8. */
+function phi(z: number): number {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const d = 0.3989422804014327 * Math.exp((-z * z) / 2);
+  const p = d * t * (0.319381530 + t * (-0.356563782 + t * (1.781477937
+    + t * (-1.821255978 + t * 1.330274429))));
+  return z > 0 ? 1 - p : p;
+}
+
+/**
+ * P(this tactic scores better than that one) — a real probability, unlike either posterior
+ * mean on its own.
+ *
+ * A Beta mean here is the expected value of the *reward*: a logistic squash of relative
+ * lift, minus the cost charged for interrupting. It is the number the sampler runs on and
+ * it is not readable — "0.62" answers no question anybody asked. What is readable is the
+ * comparison the table exists to make, and that comparison has an honest unit: how sure
+ * Gambit is that one arm beats another, given everything it has seen.
+ *
+ * Normal approximation rather than the exact Beta sum: with a handful of pulls the two
+ * agree to well under the precision anyone reads off a chart, and it stays exact where it
+ * matters most — two identical posteriors give exactly 0.5, so an untouched cell reads as
+ * the coin flip it is.
+ */
+export type Belief = { alpha: number; beta: number };
+
+export function pBeats(x: Belief, y: Belief): number {
+  const mx = x.alpha / (x.alpha + x.beta);
+  const my = y.alpha / (y.alpha + y.beta);
+  // Exact where it matters most, rather than the approximation's 0.4999999995: two
+  // untouched cells have to read as a dead-level coin flip and not as a hair's advantage.
+  if (mx === my) return 0.5;
+  const spread = Math.hypot(betaSd(x.alpha, x.beta), betaSd(y.alpha, y.beta));
+  if (spread < 1e-9) return Number(mx > my);
+  return phi((mx - my) / spread);
+}
+
+/** Above this Gambit is calling it; below the mirror of it, it is calling the other way.
+ *  In between is "too close to say", which the map has to be able to print. */
+export const SURE = 0.7;
 
 export const STATE_LABEL: Record<ChatState, string> = {
   lull: 'LULL',

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { ChevronRight, ExternalLink, Wrench } from "lucide-react"
 import Panel, { PanelButton } from "./Panel"
 import { controller } from "../useGambit"
-import type { Arm, Autonomy } from "../types"
+import type { Arm, Autonomy, Mode } from "../types"
 
 type Row = {
   label: string
@@ -17,11 +17,17 @@ type Row = {
 
 const OURS = 3
 
-// What each arm's toggle restores to when turned back on — its real backend default.
+// Manual fire-rate sliders live here instead of on/off toggles — in `manual` each arm
+// fires at the rate you set and the bandit never runs; in `auto` these are ignored.
+const RATE_ARMS: Arm[] = ["emote_rally", "chat_poll", "quiz"]
+const RATE_LABEL: Record<string, string> = {
+  emote_rally: "Emote rally",
+  chat_poll: "Chat poll",
+  quiz: "Quiz",
+}
+
+// What each toggle-driven arm restores to when turned back on — its real backend default.
 const ON_VALUE: Partial<Record<Arm, Autonomy>> = {
-  emote_rally: "ask",
-  chat_poll: "ask",
-  quiz: "ask",
   chat_digest: "auto",
 }
 
@@ -38,9 +44,6 @@ const SECTIONS: { heading: string; rows: Row[] }[] = [
   {
     heading: "Tactics",
     rows: [
-      { label: "Emote rally", kind: "toggle", on: true, arm: "emote_rally" },
-      { label: "Chat poll", kind: "toggle", on: true, arm: "chat_poll" },
-      { label: "Quiz", kind: "toggle", on: true, arm: "quiz" },
       { label: "Chat digest", kind: "toggle", on: true, arm: "chat_digest" },
       { label: "Prediction", muted: true },
     ],
@@ -95,12 +98,15 @@ function Toggle({ on }: { on: boolean }) {
   )
 }
 
-/** Kick's channel settings list, for chrome only, plus our Gambit pre-set — "Suggestions"
- *  and the Tactics toggles actually drive the controller (`GET`/`PUT /controller/autonomy`).
- *  Everything below "Tactics" is inert Kick chrome; nothing there is ours to wire up. */
+/** Kick's channel settings list, for chrome only, plus our Gambit pre-set — "Suggestions",
+ *  the mode switch and per-arm rate sliders, and the "Chat digest" toggle actually drive the
+ *  controller (`GET`/`PUT /controller/autonomy`). Everything below "Tactics" is inert Kick
+ *  chrome; nothing there is ours to wire up. */
 export default function ChannelActions() {
   const [enabled, setEnabled] = useState(true)
   const [autonomy, setAutonomy] = useState<Partial<Record<Arm, Autonomy>>>({})
+  const [mode, setMode] = useState<Mode>("auto")
+  const [rates, setRates] = useState<Partial<Record<Arm, number>>>({})
 
   useEffect(() => {
     void controller
@@ -108,6 +114,8 @@ export default function ChannelActions() {
       .then((p) => {
         setEnabled(p.enabled)
         setAutonomy(p.autonomy)
+        if (p.mode) setMode(p.mode)
+        if (p.fire_rate) setRates((r) => ({ ...r, ...p.fire_rate }))
       })
       .catch(() => undefined)
   }, [])
@@ -128,6 +136,16 @@ export default function ChannelActions() {
       .setAutonomy({ autonomy: { [arm]: next } })
       .then((p) => setAutonomy(p.autonomy))
       .catch(() => undefined)
+  }
+
+  const setModeAndSave = (next: Mode) => {
+    setMode(next)
+    void controller.setAutonomy({ mode: next }).catch(() => undefined)
+  }
+
+  const setRate = (arm: Arm, value: number) => {
+    setRates((r) => ({ ...r, [arm]: value }))
+    void controller.setAutonomy({ fire_rate: { [arm]: value } }).catch(() => undefined)
   }
 
   const isOn = (r: Row): boolean => {
@@ -191,6 +209,51 @@ export default function ChannelActions() {
               </div>
             )
           })}
+          {s.heading === "Tactics" && (
+            <div className="space-y-3 border-b border-[var(--border)] py-2">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-[var(--text-secondary)]">Mode</span>
+                <div className="flex gap-1 rounded-md border border-[var(--border)] p-0.5">
+                  {(["manual", "auto"] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setModeAndSave(m)}
+                      className={`rounded px-2 py-0.5 text-xs font-semibold capitalize ${
+                        mode === m
+                          ? "bg-[var(--bg-elevated)] text-[var(--text-primary)]"
+                          : "text-[var(--text-muted)]"
+                      }`}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className={`space-y-3 ${mode === "auto" ? "opacity-40" : ""}`}>
+                {RATE_ARMS.map((arm) => (
+                  <div key={arm}>
+                    <div className="mb-1 flex justify-between text-sm">
+                      <span className="text-[var(--text-secondary)]">{RATE_LABEL[arm]}</span>
+                      <span className="tnum text-xs text-[var(--text-muted)]">
+                        {(rates[arm] ?? 0).toFixed(1)} / min
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={5}
+                      step={0.5}
+                      value={rates[arm] ?? 0}
+                      disabled={mode === "auto"}
+                      onChange={(e) => setRate(arm, Number(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       ))}
     </Panel>

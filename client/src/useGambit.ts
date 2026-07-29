@@ -1,7 +1,7 @@
 // One SSE subscription, one reducer, one state object for both surfaces.
 import { useEffect, useReducer, useRef } from 'react';
 import type {
-  ActionFrame, Arm, Autonomy, BanditFrame, ChatFrame, ContextFrame, DigestFrame, Frame,
+  ActionFrame, Arm, Autonomy, BanditFrame, ChatFrame, ContextFrame, DigestFrame, Frame, Mode,
   PollFrame, ResultFrame,
 } from './types';
 
@@ -220,11 +220,21 @@ export const gym = {
   status: () => fetch(`${API_BASE}/dev/gym`).then((r) => r.json()),
 };
 
-export type Policy = { enabled: boolean; autonomy: Record<Arm, Autonomy> };
+export type Policy = {
+  enabled: boolean;
+  autonomy: Record<Arm, Autonomy>;
+  mode: Mode;
+  fire_rate: Partial<Record<Arm, number>>;
+};
 
 export const controller = {
   policy: (): Promise<Policy> => fetch(`${API_BASE}/controller/policy`).then((r) => r.json()),
-  setAutonomy: (body: { enabled?: boolean; autonomy?: Partial<Record<Arm, Autonomy>> }) =>
+  setAutonomy: (body: {
+    enabled?: boolean;
+    autonomy?: Partial<Record<Arm, Autonomy>>;
+    mode?: Mode;
+    fire_rate?: Partial<Record<Arm, number>>;
+  }) =>
     fetch(`${API_BASE}/controller/autonomy`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

@@ -1,6 +1,5 @@
-// The pending-decision card: a suggestion awaiting the streamer's send/skip. Shared by
-// `LivePanel` (floating, over the OBS preview) and `Insights` (docked, in the Kick-replica
-// dashboard) — same decision, two hosts.
+// The pending-decision card: a suggestion awaiting the streamer's send/skip, docked in
+// `Insights` on the Kick-replica dashboard.
 import { useEffect, useRef, useState } from 'react';
 import { Zap } from 'lucide-react';
 import type { ActionFrame, BanditFrame } from '../types';

@@ -8,18 +8,14 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .bandit import Bandit
 from .config import Settings, get_settings
-from .context import StreamContext, poll_channel
-from .controller import Controller, hub_publisher
-from .engagement import EngagementMonitor
+from .context import poll_channel
+from .controller import build_stack
 from .hub import EventHub
 from .kick_api import KickClient, NotAuthorizedError
 from .oauth import TokenStore
-from .reward import RewardBook
 from .routes import auth, controller, read, subscriptions, webhook
 from .security import SignatureVerifier
-from .store import EventStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("kick")
@@ -60,7 +56,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     app = FastAPI(title="easy-kick backend", lifespan=_lifespan)
     app.state.settings = settings
-    app.state.store = EventStore(maxlen=settings.buffer_size)
     app.state.hub = EventHub()
     app.state.tokens = TokenStore()
     app.state.verifier = SignatureVerifier()
@@ -74,17 +69,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.add_exception_handler(NotAuthorizedError, _not_authorized_handler)
     app.add_exception_handler(httpx.HTTPStatusError, _upstream_error_handler)
-    app.state.context = StreamContext()
-    app.state.monitor = EngagementMonitor(app.state.store, app.state.context)
-    app.state.bandit = Bandit()
-    app.state.controller = Controller(
-        monitor=app.state.monitor,
-        bandit=app.state.bandit,
-        rewards=RewardBook(app.state.monitor),
-        context=app.state.context,
-        store=app.state.store,
-        publish=hub_publisher(app.state.hub),
-    )
+    build_stack(app, settings)
     app.include_router(read.router)
     app.include_router(webhook.router)
     app.include_router(auth.router)

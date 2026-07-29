@@ -16,7 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from .bandit import MIN_PULLS, Decision
+from .bandit import MIN_PULLS, Bandit, Decision
 from .context import StreamContext
 from .engagement import BOT_NAME, EngagementMonitor
 from .hub import EventHub
@@ -443,6 +443,26 @@ def hub_publisher(hub: EventHub) -> Callable[[str, dict], None]:
         )
 
     return publish
+
+
+def build_stack(app, settings, *, perform: Callable[[Arm, ChatState, Card], None] | None = None) -> None:
+    """Wire StreamContext -> EventStore -> Bandit -> EngagementMonitor -> Controller onto
+    `app.state`. Used both at app startup and to reset everything the gym touches, so the two
+    can't drift apart.
+    """
+    app.state.context = StreamContext()
+    app.state.store = EventStore(maxlen=settings.buffer_size)
+    app.state.bandit = Bandit()
+    app.state.monitor = EngagementMonitor(app.state.store, app.state.context)
+    app.state.controller = Controller(
+        monitor=app.state.monitor,
+        bandit=app.state.bandit,
+        rewards=RewardBook(app.state.monitor),
+        context=app.state.context,
+        store=app.state.store,
+        publish=hub_publisher(app.state.hub),
+        perform=perform,
+    )
 
 
 async def run(controller: Controller, tick_s: float = TICK_S) -> None:

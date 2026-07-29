@@ -1,9 +1,10 @@
 // One SSE subscription, one reducer, one state object for both surfaces.
 import { useEffect, useReducer, useRef } from 'react';
 import type {
-  ActionFrame, Arm, Autonomy, BanditFrame, ChatFrame, ContextFrame, DigestFrame, Frame, Mode,
-  PollFrame, ResultFrame,
+  ActionFrame, Arm, Autonomy, BanditFrame, ChatFrame, ClosedPoll, ContextFrame, DigestFrame,
+  Frame, Mode, PollFrame, ResultFrame,
 } from './types';
+export type { ClosedPoll } from './types';
 
 /** The bot's username in chat, live and in the gym. */
 export const BOT_NAME = 'gambit';
@@ -13,16 +14,6 @@ export const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 const MAX_CHAT = 80;
 const MAX_SPARK = 90;
 const BACKLOG = 200; // chat messages replayed on connect // ~3 min of context frames at one every 2s
-
-/** A poll/quiz window's final split, kept around after close until the streamer dismisses
- *  it or a new bot line replaces it — see the `closedPoll` notes on the reducer below. */
-export type ClosedPoll = {
-  action_id: string;
-  question: string;
-  options: string[];
-  votes: Record<string, number>;
-  voters: number;
-};
 
 export type GambitState = {
   connected: boolean;

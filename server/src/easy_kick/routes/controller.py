@@ -10,15 +10,10 @@ from dataclasses import dataclass, field
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from ..bandit import Bandit
 from ..config import PROJECT_ROOT
-from ..context import StreamContext
-from ..controller import TICK_S, Controller, hub_publisher
-from ..engagement import EngagementMonitor
+from ..controller import TICK_S, Controller, build_stack
 from ..gym import POLICIES, Gym, simulate
 from ..models import Arm, Autonomy, Mode
-from ..reward import RewardBook
-from ..store import EventStore
 
 router = APIRouter(tags=["controller"])
 gym_router = APIRouter(prefix="/dev/gym", tags=["development"])
@@ -169,19 +164,8 @@ async def stop_gym(request: Request) -> dict:
 
 def _reset_shared_state(app) -> None:
     """Rebuild everything the gym touches, the same way `create_app` builds it fresh."""
-    app.state.context = StreamContext()
-    app.state.store = EventStore(maxlen=app.state.settings.buffer_size)
-    app.state.bandit = Bandit()
-    app.state.monitor = EngagementMonitor(app.state.store, app.state.context)
-    app.state.controller = Controller(
-        monitor=app.state.monitor,
-        bandit=app.state.bandit,
-        rewards=RewardBook(app.state.monitor),
-        context=app.state.context,
-        store=app.state.store,
-        publish=hub_publisher(app.state.hub),
-        perform=live_fire(app) if app.state.settings.controller_enabled else None,
-    )
+    settings = app.state.settings
+    build_stack(app, settings, perform=live_fire(app) if settings.controller_enabled else None)
 
 
 @gym_router.post("/speedrun")

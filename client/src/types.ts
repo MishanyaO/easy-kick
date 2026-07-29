@@ -37,6 +37,10 @@ export type PollFrame = {
   closes_in_s: number;
 };
 
+/** A poll/quiz window's final split, kept around after close until the streamer dismisses
+ *  it or a new bot line replaces it — see the `closedPoll` notes in useGambit's reducer. */
+export type ClosedPoll = Pick<PollFrame, 'action_id' | 'question' | 'options' | 'votes' | 'voters'>;
+
 export type ContextFrame = {
   type: 'context';
   viewer_count: number | null;

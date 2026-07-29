@@ -60,10 +60,10 @@ export default function KickDashboard() {
       <div className="flex min-h-0 flex-1">
         <Sidebar open={sidebarOpen} />
 
-        <main className="grid min-h-0 flex-1 grid-cols-[minmax(0,50fr)_minmax(0,30fr)_minmax(0,20fr)] gap-1 overflow-hidden bg-[var(--bg-page)] p-1">
+        <main className="grid min-h-0 flex-1 grid-cols-[minmax(0,50fr)_minmax(0,30fr)_minmax(0,20fr)] grid-rows-[minmax(0,1fr)] gap-1 overflow-hidden bg-[var(--bg-page)] p-1">
           {/* Flex, not grid rows: `auto` rows squeeze below their content when
               the column overflows, and a squeezed panel clips its own header. */}
-          <div className="flex min-h-0 flex-col gap-1 overflow-y-auto">
+          <div className="flex min-h-0 flex-col gap-1 overflow-hidden">
             <div className="shrink-0">
               <SessionInfo
                 context={s.context}
@@ -80,7 +80,7 @@ export default function KickDashboard() {
 
             {/* Kick's own bottom row, but the right half is ours now: Insights in the
                 slot Mod Actions used to occupy. */}
-            <div className="grid min-h-[420px] flex-1 grid-cols-2 gap-1">
+            <div className="grid min-h-0 flex-1 grid-cols-2 grid-rows-[minmax(0,1fr)] gap-1 overflow-hidden">
               <ActivityFeed s={s} />
               <Insights s={s} onDecide={s.decide} />
             </div>

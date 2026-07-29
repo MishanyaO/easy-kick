@@ -53,7 +53,7 @@ export default function SessionInfo({
           <div key={label} className="flex min-w-0 shrink-0 flex-col gap-1.5 px-3 py-2.5">
             {i === 0 ? (
               <span
-                className={`w-fit px-1.5 py-0.5 text-[11px] font-bold tracking-wide ${
+                className={`w-[60px] px-1.5 py-0.5 text-center text-[11px] font-bold tracking-wide ${
                   live ? 'bg-[var(--kick-green)] text-[var(--on-primary)]' : 'bg-[var(--bg-elevated)] text-white'
                 }`}
               >

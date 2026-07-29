@@ -11,9 +11,9 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from ..config import PROJECT_ROOT
-from ..controller import TICK_S, Controller
+from ..controller import TICK_S, Controller, build_stack
 from ..gym import POLICIES, Gym, simulate
-from ..models import Arm, Autonomy
+from ..models import Arm, Autonomy, Mode
 
 router = APIRouter(tags=["controller"])
 gym_router = APIRouter(prefix="/dev/gym", tags=["development"])
@@ -30,15 +30,22 @@ class GymState:
     gym: Gym | None = field(default=None, repr=False)
     speed: float = 1.0
     seed: int = 0
+    paused_at: float | None = field(default=None, repr=False)
 
     @property
     def running(self) -> bool:
         return self.task is not None and not self.task.done()
 
+    @property
+    def paused(self) -> bool:
+        """Held onto its gym and metrics, just not ticking — a stopped one has neither."""
+        return self.gym is not None and not self.running
+
     def status(self) -> dict:
         gym = self.gym
+        status = "running" if self.running else "paused" if self.paused else "idle"
         return {
-            "status": "running" if self.running else "idle",
+            "status": status,
             "speed": self.speed,
             "seed": self.seed,
             "virtual_time_s": gym.t if gym else 0.0,
@@ -85,9 +92,19 @@ async def start_gym(request: Request, speed: float = Query(1.0, gt=0, le=100),
     state: GymState = request.app.state.gym
     if state.running:
         raise HTTPException(status_code=409, detail="a gym is already running")
+    context = request.app.state.context
 
-    state.speed, state.seed = speed, seed
-    state.gym = Gym(seed=seed, store=request.app.state.store, hub=request.app.state.hub)
+    if state.paused:
+        # Resuming: keep the gym, its metrics, and "Time Live" — just shift
+        # started_at forward by however long the pause lasted.
+        if context.started_at is not None and state.paused_at is not None:
+            context.started_at += time.time() - state.paused_at
+        state.paused_at = None
+    else:
+        state.speed, state.seed = speed, seed
+        state.gym = Gym(seed=seed, store=request.app.state.store, hub=request.app.state.hub)
+        context.started_at = time.time()
+
     request.app.state.controller.perform = gym_fire(request.app, state)
     state.task = asyncio.create_task(_run_gym(request.app, state))
     logger.info("gym started: seed=%s speed=%s", seed, speed)
@@ -99,15 +116,56 @@ async def gym_status(request: Request) -> dict:
     return request.app.state.gym.status()
 
 
-@gym_router.delete("")
-async def stop_gym(request: Request) -> dict:
+@gym_router.patch("/speed")
+async def set_gym_speed(request: Request, speed: float = Query(..., gt=0, le=100)) -> dict:
+    """Change the tick rate in place. `_run_gym`'s loop re-reads `state.speed` on every
+    iteration, so this takes effect on the very next tick — no restart needed."""
+    state: GymState = request.app.state.gym
+    if state.gym is None:
+        raise HTTPException(status_code=409, detail="no gym to adjust")
+    state.speed = speed
+    logger.info("gym speed changed to %s", speed)
+    return state.status()
+
+
+@gym_router.post("/pause")
+async def pause_gym(request: Request) -> dict:
+    """Stop ticking without losing the gym, its metrics, or the elapsed uptime."""
     state: GymState = request.app.state.gym
     if not state.running:
-        return state.status()
+        raise HTTPException(status_code=409, detail="gym is not running")
     state.task.cancel()
     with suppress(asyncio.CancelledError):
         await state.task
+    state.task = None
+    state.paused_at = time.time()
+    logger.info("gym paused")
+    return state.status()
+
+
+@gym_router.delete("")
+async def stop_gym(request: Request) -> dict:
+    """Stop, and leave nothing behind: a gym run mutates shared, request-scoped state
+    (the event store, the controller's rails and posteriors, the stream context) that
+    `pause` deliberately preserves but a real stop must not — otherwise the next gym
+    run, or a switch to live traffic, starts contaminated by synthetic history."""
+    state: GymState = request.app.state.gym
+    if state.running:
+        state.task.cancel()
+        with suppress(asyncio.CancelledError):
+            await state.task
+    state.task = None
+    state.gym = None
+    state.paused_at = None
+    _reset_shared_state(request.app)
+    logger.info("gym stopped")
     return {**state.status(), "status": "stopped"}
+
+
+def _reset_shared_state(app) -> None:
+    """Rebuild everything the gym touches, the same way `create_app` builds it fresh."""
+    settings = app.state.settings
+    build_stack(app, settings, perform=live_fire(app) if settings.controller_enabled else None)
 
 
 @gym_router.post("/speedrun")
@@ -164,6 +222,10 @@ class AutonomyUpdate(BaseModel):
 
     autonomy: dict[Arm, Autonomy] | None = None
     enabled: bool | None = None
+    # Set before the stream starts. `manual`: `fire_rate` (fires/minute per arm) drives firing
+    # directly, the bandit is never consulted. `auto`: `fire_rate` is ignored entirely.
+    mode: Mode | None = None
+    fire_rate: dict[Arm, float] | None = None
 
 
 @router.put("/controller/autonomy")
@@ -173,8 +235,13 @@ async def set_autonomy(body: AutonomyUpdate, request: Request) -> dict:
         controller.autonomy.update(body.autonomy)
     if body.enabled is not None:
         controller.enabled = body.enabled
+    if body.mode is not None:
+        controller.mode = body.mode
+    if body.fire_rate:
+        controller.fire_rate.update(body.fire_rate)
     return {"enabled": controller.enabled, "autonomy": controller.autonomy,
-            "promotions": controller.promotions()}
+            "promotions": controller.promotions(),
+            "mode": controller.mode, "fire_rate": controller.fire_rate}
 
 
 @router.get("/eval/results")

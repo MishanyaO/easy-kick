@@ -9,6 +9,7 @@ function Row({
   chipColor,
   title,
   detail,
+  votes,
   trailing,
   trailingColor,
 }: {
@@ -16,6 +17,8 @@ function Row({
   chipColor: string;
   title: string;
   detail?: string;
+  /** A closed chat_poll/quiz's final split — the decision, not just that it happened. */
+  votes?: Record<string, number>;
   trailing?: string;
   trailingColor?: string;
 }) {
@@ -30,6 +33,11 @@ function Row({
       <div className="min-w-0 flex-1">
         <p className="truncate text-xs text-white">{title}</p>
         {detail && <p className="truncate text-[11px] text-[var(--text-muted)]">{detail}</p>}
+        {votes && Object.values(votes).some((n) => n > 0) && (
+          <span className="tnum mt-0.5 inline-block rounded-sm bg-[var(--bg-elevated)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)]">
+            {Object.entries(votes).map(([k, n]) => `${k}:${n}`).join(' · ')}
+          </span>
+        )}
       </div>
       {trailing && (
         <span className="tnum shrink-0 text-[11px] font-semibold" style={{ color: trailingColor }}>
@@ -94,6 +102,7 @@ export default function ActivityFeed({ s }: { s: GambitState }) {
                 chipColor="var(--bg-selected)"
                 title={r.action?.title ?? r.arm}
                 detail={isControl(r) ? 'control window' : verdict}
+                votes={r.votes}
                 trailing={points(r.engagement_delta)}
                 trailingColor={isControl(r) ? 'var(--text-muted)' : VERDICT_COLOR[verdict]}
               />

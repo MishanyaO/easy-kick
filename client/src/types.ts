@@ -2,9 +2,12 @@
 // spec). Where the spec and the wire disagree, the wire wins and the gap is commented.
 
 export type Arm =
-  | 'nothing' | 'emote_rally' | 'chat_poll' | 'question_relay' | 'shoutout' | 'prediction';
+  | 'nothing' | 'emote_rally' | 'chat_poll' | 'quiz' | 'chat_digest' | 'prediction';
 export type ChatState = 'lull' | 'steady' | 'spike';
 export type Autonomy = 'auto' | 'ask' | 'off';
+/** Set before the stream starts. `manual`: fire-rate sliders decide, the bandit never runs.
+ *  `auto`: sliders are ignored, Thompson sampling explores freely. */
+export type Mode = 'auto' | 'manual';
 
 export type ChatFrame = {
   type: 'chat';
@@ -34,11 +37,18 @@ export type PollFrame = {
   closes_in_s: number;
 };
 
+/** A poll/quiz window's final split, kept around after close until the streamer dismisses
+ *  it or a new bot line replaces it — see the `closedPoll` notes in useGambit's reducer. */
+export type ClosedPoll = Pick<PollFrame, 'action_id' | 'question' | 'options' | 'votes' | 'voters'>;
+
 export type ContextFrame = {
   type: 'context';
   viewer_count: number | null;
   category: string | null;
   participation: number; // unique chatters / viewers — the primary metric
+  unique_chatters: number;
+  msgs_per_min: number;
+  actions_per_min: number; // comments + reactions (redemptions, gifts) — same window
   uptime_s: number;
   streamer_speaking?: boolean;
 };
@@ -80,6 +90,16 @@ export type ResultFrame = {
   // contract v2 asks for label / replies / held_s / raiders — not yet
 };
 
+/** `chat_digest`: a card-only highlight, never posted to chat and never scored. */
+export type DigestFrame = {
+  type: 'digest';
+  ts: string;
+  kind: 'chat_digest';
+  title: string;
+  body: string;
+  highlight: { who: string; text: string };
+};
+
 export type Posterior = {
   state: ChatState;
   arm: Arm;
@@ -102,7 +122,7 @@ export type BanditFrame = {
 };
 
 export type Frame =
-  | ChatFrame | ContextFrame | ActionFrame | ResultFrame | BanditFrame | PollFrame;
+  | ChatFrame | ContextFrame | ActionFrame | ResultFrame | BanditFrame | PollFrame | DigestFrame;
 
 /** UI vocabulary derived from his numbers — the backend does not send these. */
 export type VerdictLabel = 'Worked' | 'Neutral' | 'Backfired' | "Can't tell";

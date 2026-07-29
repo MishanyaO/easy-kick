@@ -10,8 +10,7 @@ import ChannelActions from './ChannelActions';
 import ChatComposer from './ChatComposer';
 import IconRail from './IconRail';
 import ActivityFeed from './ActivityFeed';
-import ModActions from './ModActions';
-import InsightsDrawer from './InsightsDrawer';
+import Insights from './Insights';
 import Chat from '../components/Chat';
 import { useGambit, gym } from '../useGambit';
 
@@ -22,29 +21,43 @@ import { useGambit, gym } from '../useGambit';
  * `--bg-surface` cards floating on a black page with 4px gutters, all measured
  * off the live dashboard.
  *
- * Kick's own panels are reproduced as they ship, Mod Actions included. Our surface
- * is the one thing that is *not* a Kick panel: `InsightsDrawer` floats over the
- * whole dashboard, parked by the streamer over the preview, because the streamer is
- * looking at the preview and not at us. Analytics and Tactics live one click away in
- * the drawer's popout tab (`?insights`). Activity Feed, Session Info and Chat carry
- * the rest of the live data; Mod Actions, Channel Actions and the rail are inert
- * Kick chrome.
+ * Kick's own Mod Actions panel shipped empty — no moderation data, no reason to keep it —
+ * so ours, `Insights`, sits in that slot instead: a mini graph plus whatever needs the
+ * streamer's attention now (a pending approval, chat_digest cards). Analytics and Tactics
+ * live one click away via its popout (`?insights`). The live poll tally lives in Chat's
+ * own pinned-banner slot, not here. Activity Feed, Session Info and Chat carry the rest of
+ * the live data; Channel Actions and the rail are inert Kick chrome.
  */
 export default function KickDashboard() {
   const s = useGambit();
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [gymOn, setGymOn] = useState(false);
+  const [gymStatus, setGymStatus] = useState<'idle' | 'running' | 'paused'>('idle');
+  const [gymSpeed, setGymSpeed] = useState(5);
 
   useEffect(() => {
     void gym
       .status()
-      .then((g) => setGymOn(g.status === 'running'))
+      .then((g) => setGymStatus(g.status))
       .catch(() => undefined);
   }, []);
 
-  const toggleGym = async () => {
-    await (gymOn ? gym.stop() : gym.start(20, 7));
-    setGymOn(!gymOn);
+  const startGym = async () => {
+    await gym.start(gymSpeed, 7);
+    setGymStatus('running');
+  };
+  const pauseGym = async () => {
+    await gym.pause();
+    setGymStatus('paused');
+  };
+  const stopGym = async () => {
+    await gym.stop();
+    s.reset();
+    setGymStatus('idle');
+  };
+  const changeGymSpeed = (speed: number) => {
+    setGymSpeed(speed);
+    // Idle: nothing to hot-change, `speed` just gets picked up on the next Start.
+    if (gymStatus !== 'idle') void gym.setSpeed(speed);
   };
 
   return (
@@ -53,12 +66,18 @@ export default function KickDashboard() {
       <div className="flex min-h-0 flex-1">
         <Sidebar open={sidebarOpen} />
 
-        <main className="grid min-h-0 flex-1 grid-cols-[minmax(0,50fr)_minmax(0,30fr)_minmax(0,20fr)] gap-1 overflow-hidden bg-[var(--bg-page)] p-1">
+        <main className="grid min-h-0 flex-1 grid-cols-[minmax(0,50fr)_minmax(0,30fr)_minmax(0,20fr)] grid-rows-[minmax(0,1fr)] gap-1 overflow-hidden bg-[var(--bg-page)] p-1">
           {/* Flex, not grid rows: `auto` rows squeeze below their content when
               the column overflows, and a squeezed panel clips its own header. */}
-          <div className="flex min-h-0 flex-col gap-1 overflow-y-auto">
+          <div className="flex min-h-0 flex-col gap-1 overflow-hidden">
             <div className="shrink-0">
-              <SessionInfo context={s.context} live={s.connected} />
+              <SessionInfo
+                context={s.context}
+                live={gymStatus === 'running'}
+                viewerSpark={s.viewerSpark}
+                activeViewersSpark={s.activeViewersSpark}
+                actionsSpark={s.actionsSpark}
+              />
             </div>
 
             {/* Aspect, not a fixed height — a short wide box crops the banner. */}
@@ -66,11 +85,11 @@ export default function KickDashboard() {
               <StreamPreview />
             </div>
 
-            {/* Kick's own bottom row, restored: Activity Feed beside Mod Actions.
-                Insights no longer squats in the Mod Actions slot — it floats. */}
-            <div className="grid min-h-[420px] flex-1 grid-cols-2 gap-1">
+            {/* Kick's own bottom row, but the right half is ours now: Insights in the
+                slot Mod Actions used to occupy. */}
+            <div className="grid min-h-0 flex-1 grid-cols-2 grid-rows-[minmax(0,1fr)] gap-1 overflow-hidden">
               <ActivityFeed s={s} />
-              <ModActions />
+              <Insights s={s} onDecide={s.decide} />
             </div>
           </div>
 
@@ -98,6 +117,9 @@ export default function KickDashboard() {
                 lastBot={s.lastBot}
                 participation={s.context?.participation}
                 viewers={s.context?.viewer_count}
+                poll={s.poll}
+                closedPoll={s.closedPoll}
+                onDismissPoll={s.dismissPoll}
                 frameless
               />
             </div>
@@ -105,7 +127,14 @@ export default function KickDashboard() {
           </Panel>
 
           <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-1">
-            <StreamInfo gymOn={gymOn} onToggleGym={() => void toggleGym()} />
+            <StreamInfo
+              gymStatus={gymStatus}
+              gymSpeed={gymSpeed}
+              onChangeGymSpeed={changeGymSpeed}
+              onStartGym={() => void startGym()}
+              onPauseGym={() => void pauseGym()}
+              onStopGym={() => void stopGym()}
+            />
             <ChannelActions />
           </div>
         </main>
@@ -114,10 +143,6 @@ export default function KickDashboard() {
           <IconRail />
         </div>
       </div>
-
-      {/* Ours, and the only thing on this screen that is: floating, user-parked,
-          above the whole dashboard rather than inside one of Kick's slots. */}
-      <InsightsDrawer s={s} />
     </div>
   );
 }

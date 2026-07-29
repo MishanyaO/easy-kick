@@ -52,6 +52,18 @@ def test_a_category_switch_opens_a_transition_window():
     assert not context.in_transition(2000 + CATEGORY_TRANSITION_S + 1)
 
 
+def test_the_frame_carries_the_three_live_graph_series():
+    context = StreamContext()
+    context.apply(CHANNEL, now=1000)
+
+    frame = context.frame(1000, participation=0.05, unique_chatters=12, msgs_per_min=8.5)
+
+    assert frame["viewer_count"] == 1240
+    assert frame["participation"] == 0.05
+    assert frame["unique_chatters"] == 12
+    assert frame["msgs_per_min"] == 8.5
+
+
 async def test_a_failed_poll_degrades_to_an_unknown_viewer_count():
     context = StreamContext()
     kick = StubKick([CHANNEL], RuntimeError("kick is down"))

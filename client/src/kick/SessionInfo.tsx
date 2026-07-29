@@ -1,7 +1,9 @@
 import { ExternalLink } from 'lucide-react';
 import Panel, { PanelButton } from './Panel';
 import { StreamIcon } from './icons';
-import { pct, type ContextFrame } from '../types';
+import type { ContextFrame } from '../types';
+import MultiSpark from '../components/MultiSpark';
+import type { GambitState } from '../useGambit';
 
 /** uptime_s -> HH:MM:SS, the way Kick renders "Time Live". */
 function elapsed(seconds: number): string {
@@ -9,21 +11,31 @@ function elapsed(seconds: number): string {
   return `${p(seconds / 3600)}:${p((seconds % 3600) / 60)}:${p(seconds % 60)}`;
 }
 
+const VIEWERS_COLOR = '#6aa9ff';
+const ACTIONS_COLOR = 'var(--warn)';
+const ACTIVE_VIEWERS_COLOR = 'var(--kick-green)';
+
 /**
  * Kick's "Session Info" strip. The cells are Kick's; the numbers are the
- * controller's — viewers, participation and uptime off the context frame.
+ * controller's. Viewers and actions (comments + reactions) used to be their own
+ * cells but read better as a graph — it's the one place on the dashboard that
+ * shows their shape over time, not just the instant value.
  */
 export default function SessionInfo({
   context,
   live,
+  viewerSpark,
+  activeViewersSpark,
+  actionsSpark,
 }: {
   context: ContextFrame | null;
   live: boolean;
+  viewerSpark: GambitState['viewerSpark'];
+  activeViewersSpark: GambitState['activeViewersSpark'];
+  actionsSpark: GambitState['actionsSpark'];
 }) {
   const cells: [string, string][] = [
     ['Session', live ? 'LIVE' : 'OFFLINE'],
-    ['Viewers', context?.viewer_count != null ? String(context.viewer_count) : '-'],
-    ['Talking', context ? pct(context.participation) : '-'],
     ['Category', context?.category ?? '-'],
     ['Time Live', context ? elapsed(context.uptime_s) : '-'],
   ];
@@ -39,12 +51,12 @@ export default function SessionInfo({
       }
       bodyClassName="flex"
     >
-      <div className="grid w-full grid-cols-5 divide-x divide-[var(--border)] border-b border-[var(--border)]">
+      <div className="flex w-full divide-x divide-[var(--border)] border-b border-[var(--border)]">
         {cells.map(([label, value], i) => (
-          <div key={label} className="flex min-w-0 flex-col gap-1.5 px-3 py-2.5">
+          <div key={label} className="flex min-w-0 shrink-0 flex-col gap-1.5 px-3 py-2.5">
             {i === 0 ? (
               <span
-                className={`w-fit px-1.5 py-0.5 text-[11px] font-bold tracking-wide ${
+                className={`w-[60px] px-1.5 py-0.5 text-center text-[11px] font-bold tracking-wide ${
                   live ? 'bg-[var(--kick-green)] text-[var(--on-primary)]' : 'bg-[var(--bg-elevated)] text-white'
                 }`}
               >
@@ -56,6 +68,40 @@ export default function SessionInfo({
             <span className="text-xs text-[var(--text-secondary)]">{label}</span>
           </div>
         ))}
+
+        <div className="flex min-w-0 flex-1 flex-col gap-1.5 px-3 py-2.5">
+          <div className="flex items-center gap-3 text-xs">
+            <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
+              <span className="size-1.5 rounded-full" style={{ background: VIEWERS_COLOR }} />
+              Viewers
+              <span className="tnum text-white">
+                {context?.viewer_count != null ? context.viewer_count : '-'}
+              </span>
+            </span>
+            <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
+              <span className="size-1.5 rounded-full" style={{ background: ACTIVE_VIEWERS_COLOR }} />
+              Active Viewers
+              <span className="tnum text-white">
+                {context ? context.unique_chatters : '-'}
+              </span>
+            </span>
+            <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
+              <span className="size-1.5 rounded-full" style={{ background: ACTIONS_COLOR }} />
+              Actions
+              <span className="tnum text-white">
+                {context ? context.actions_per_min.toFixed(1) : '-'}/min
+              </span>
+            </span>
+          </div>
+          <MultiSpark
+            height={26}
+            series={[
+              { data: viewerSpark, color: VIEWERS_COLOR, scaleGroup: 'viewers' },
+              { data: activeViewersSpark, color: ACTIVE_VIEWERS_COLOR, scaleGroup: 'viewers' },
+              { data: actionsSpark, color: ACTIONS_COLOR },
+            ]}
+          />
+        </div>
       </div>
     </Panel>
   );

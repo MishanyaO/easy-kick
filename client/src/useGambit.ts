@@ -1,8 +1,10 @@
 // One SSE subscription, one reducer, one state object for both surfaces.
 import { useEffect, useReducer, useRef } from 'react';
 import type {
-  ActionFrame, BanditFrame, ChatFrame, ContextFrame, Frame, PollFrame, ResultFrame,
+  ActionFrame, Arm, Autonomy, BanditFrame, ChatFrame, ClosedPoll, ContextFrame, DigestFrame,
+  Frame, Mode, PollFrame, ResultFrame,
 } from './types';
+export type { ClosedPoll } from './types';
 
 /** The bot's username in chat, live and in the gym. */
 export const BOT_NAME = 'gambit';
@@ -19,6 +21,23 @@ export type GambitState = {
   context: ContextFrame | null;
   /** participation over time, for the ambient sparkline */
   spark: number[];
+  /** viewer count over time */
+  viewerSpark: number[];
+  /** unique chatters over time — the "active viewers" graph, same scale as viewerSpark */
+  activeViewersSpark: number[];
+  /** msgs/min over time — the "engagement" graph */
+  engagementSpark: number[];
+  /** comments + reactions (redemptions, gifts) over time — Session Info's activity graph */
+  actionsSpark: number[];
+  /** Same three series, never truncated — Insights shows the whole session and zooms
+   *  into a range, so unlike the strip sparks above it can't drop old samples. */
+  viewerHistory: number[];
+  activeViewersHistory: number[];
+  actionsHistory: number[];
+  /** virtual elapsed seconds ("Time Live") at each history sample, for the Insights
+   *  x-axis — the gym runs its own clock, sped up relative to wall time, so real
+   *  timestamps would misrepresent how far apart samples actually are in-session. */
+  historyElapsedS: number[];
   /** our own most recent chat line. Held OUTSIDE the chat window on purpose: the window
    *  turns over in seconds, and Kick has no pinned messages, so deriving this from the
    *  visible messages means the proof of the ACT step vanishes almost immediately. */
@@ -28,15 +47,29 @@ export type GambitState = {
   /** actions that fired and are being measured, keyed by action id */
   inflight: Record<string, ActionFrame>;
   /** every closed window, newest first */
-  results: (ResultFrame & { action?: ActionFrame })[];
+  results: (ResultFrame & { action?: ActionFrame; tick: number })[];
+  /** context frames received so far — lets a result be placed on the spark timeline
+   *  it closed under, even after that spark's window has scrolled */
+  tick: number;
   bandit: BanditFrame | null;
   /** the poll currently taking votes, if the open window has one */
   poll: PollFrame | null;
+  /** the most recently closed poll/quiz's final split, if the streamer hasn't dismissed it
+   *  and no newer bot line has replaced it — see the `chat`/`result` reducer cases */
+  closedPoll: ClosedPoll | null;
+  /** chat_digest cards, newest first — never posted to chat, never scored */
+  digests: DigestFrame[];
 };
 
+const MAX_DIGESTS = 20;
+
 const EMPTY: GambitState = {
-  connected: false, chat: [], context: null, spark: [], lastBot: null,
-  pending: null, inflight: {}, results: [], bandit: null, poll: null,
+  connected: false, chat: [], context: null, spark: [], viewerSpark: [], activeViewersSpark: [],
+  engagementSpark: [],
+  actionsSpark: [], lastBot: null,
+  viewerHistory: [], activeViewersHistory: [], actionsHistory: [], historyElapsedS: [],
+  pending: null, inflight: {}, results: [], bandit: null, poll: null, closedPoll: null,
+  digests: [], tick: 0,
 };
 
 type Msg =
@@ -44,11 +77,16 @@ type Msg =
   | { kind: 'open' }
   | { kind: 'close' }
   | { kind: 'approve'; id: string }
-  | { kind: 'dismiss'; id: string };
+  | { kind: 'dismiss'; id: string }
+  | { kind: 'dismissPoll' }
+  | { kind: 'reset' };
 
 function reduce(s: GambitState, m: Msg): GambitState {
   if (m.kind === 'open') return { ...s, connected: true };
   if (m.kind === 'close') return { ...s, connected: false };
+  // The gym stopped: the backend just handed out a fresh store/bandit/controller/context,
+  // so everything accumulated from the old run (chat, sparklines, ledger, cards) is stale.
+  if (m.kind === 'reset') return { ...EMPTY, connected: s.connected };
 
   // Optimistic local transitions — the backend confirms with a `result` frame.
   if (m.kind === 'approve') {
@@ -59,22 +97,38 @@ function reduce(s: GambitState, m: Msg): GambitState {
   if (m.kind === 'dismiss') {
     return s.pending?.id === m.id ? { ...s, pending: null } : s;
   }
+  if (m.kind === 'dismissPoll') {
+    return { ...s, closedPoll: null };
+  }
 
   const f = m.frame;
 
   switch (f.type) {
-    case 'chat':
+    case 'chat': {
+      const isBot = f.username === BOT_NAME;
       return {
         ...s,
         chat: [...s.chat.slice(-MAX_CHAT + 1), f],
-        lastBot: f.username === BOT_NAME ? f : s.lastBot,
+        lastBot: isBot ? f : s.lastBot,
+        // A new bot line is "a new thing" — the closed poll's tally has had its moment.
+        closedPoll: isBot ? null : s.closedPoll,
       };
+    }
 
     case 'context':
       return {
         ...s,
         context: f,
         spark: [...s.spark.slice(-MAX_SPARK + 1), f.participation],
+        viewerSpark: [...s.viewerSpark.slice(-MAX_SPARK + 1), f.viewer_count ?? 0],
+        activeViewersSpark: [...s.activeViewersSpark.slice(-MAX_SPARK + 1), f.unique_chatters],
+        engagementSpark: [...s.engagementSpark.slice(-MAX_SPARK + 1), f.msgs_per_min],
+        actionsSpark: [...s.actionsSpark.slice(-MAX_SPARK + 1), f.actions_per_min],
+        viewerHistory: [...s.viewerHistory, f.viewer_count ?? 0],
+        activeViewersHistory: [...s.activeViewersHistory, f.unique_chatters],
+        actionsHistory: [...s.actionsHistory, f.msgs_per_min],
+        historyElapsedS: [...s.historyElapsedS, f.uptime_s],
+        tick: s.tick + 1,
       };
 
     case 'action':
@@ -96,19 +150,33 @@ function reduce(s: GambitState, m: Msg): GambitState {
       const rest = Object.fromEntries(
         Object.entries(s.inflight).filter(([id]) => id !== f.action_id),
       );
+      const wasThisPoll = s.poll?.action_id === f.action_id;
       return {
         ...s,
         inflight: rest,
         // a `nothing` decision closes a window too — keep it, it is a real trial
-        results: [{ ...f, action }, ...s.results].slice(0, 200),
+        results: [{ ...f, action, tick: Math.max(s.tick - 1, 0) }, ...s.results].slice(0, 200),
         pending: s.pending?.id === f.action_id ? null : s.pending,
-        // the window that owned the poll is closed; its final split lives on the result
-        poll: s.poll?.action_id === f.action_id ? null : s.poll,
+        poll: wasThisPoll ? null : s.poll,
+        // the window that owned the poll is closed, but its final split stays pinned above
+        // chat — collapsing straight to plain text the instant it resolves reads as broken.
+        closedPoll: wasThisPoll && action?.options.length
+          ? {
+            action_id: f.action_id,
+            question: action.body,
+            options: action.options,
+            votes: f.votes,
+            voters: Object.values(f.votes).reduce((a, n) => a + n, 0),
+          }
+          : s.closedPoll,
       };
     }
 
     case 'bandit':
       return { ...s, bandit: f };
+
+    case 'digest':
+      return { ...s, digests: [f, ...s.digests].slice(0, MAX_DIGESTS) };
 
     default:
       return s;
@@ -142,12 +210,48 @@ export function useGambit() {
       .catch(() => undefined);
   };
 
-  return { ...state, decide };
+  /** Clear a closed poll's tally from the pinned banner by hand — purely local, nothing
+   *  server-side to confirm. */
+  const dismissPoll = () => dispatch({ kind: 'dismissPoll' });
+
+  /** Wipe every accumulated frame back to a blank slate — call this right after the gym
+   *  stops, since the backend has just discarded the state that produced all of it. */
+  const reset = () => dispatch({ kind: 'reset' });
+
+  return { ...state, decide, dismissPoll, reset };
 }
 
 export const gym = {
   start: (speed = 20, seed = 7) =>
     fetch(`${API_BASE}/dev/gym?speed=${speed}&seed=${seed}`, { method: 'POST' }),
+  /** Resumes a paused gym in place (same metrics, same "Time Live") if one is paused. */
+  pause: () => fetch(`${API_BASE}/dev/gym/pause`, { method: 'POST' }),
+  /** Hot-changes the tick rate of a running or paused gym — no restart, takes effect
+   *  on the next tick. */
+  setSpeed: (speed: number) =>
+    fetch(`${API_BASE}/dev/gym/speed?speed=${speed}`, { method: 'PATCH' }),
   stop: () => fetch(`${API_BASE}/dev/gym`, { method: 'DELETE' }),
   status: () => fetch(`${API_BASE}/dev/gym`).then((r) => r.json()),
+};
+
+export type Policy = {
+  enabled: boolean;
+  autonomy: Record<Arm, Autonomy>;
+  mode: Mode;
+  fire_rate: Partial<Record<Arm, number>>;
+};
+
+export const controller = {
+  policy: (): Promise<Policy> => fetch(`${API_BASE}/controller/policy`).then((r) => r.json()),
+  setAutonomy: (body: {
+    enabled?: boolean;
+    autonomy?: Partial<Record<Arm, Autonomy>>;
+    mode?: Mode;
+    fire_rate?: Partial<Record<Arm, number>>;
+  }) =>
+    fetch(`${API_BASE}/controller/autonomy`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => r.json()),
 };

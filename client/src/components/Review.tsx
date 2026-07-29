@@ -7,6 +7,7 @@ import {
   STATE_LABEL, VERDICT_COLOR, labelFor, isControl, points, pct, whyUnattributable,
   type ChatState, type VerdictLabel, type ResultFrame, type ActionFrame,
 } from '../types';
+import InsightsGraph from './InsightsGraph';
 
 type Row = ResultFrame & { action?: ActionFrame };
 type Filter = 'all' | ChatState;
@@ -221,6 +222,12 @@ export default function Review({ s }: { s: GambitState }) {
   const fired = rows.filter((r) => r.outcome === 'fired');
   const totalLift = fired.reduce((a, r) => a + r.engagement_delta, 0);
 
+  // `tick` is the history array index a result closed under — history is never
+  // truncated, so it lines up directly with viewerHistory/activeViewersHistory/actionsHistory.
+  const interventions = s.results
+    .filter((r) => r.outcome === 'fired')
+    .map((r) => ({ index: r.tick, result: r }));
+
   return (
     // No height, background or padding of its own — the host owns those, so this
     // renders correctly both as a full page and inside a panel.
@@ -248,6 +255,18 @@ export default function Review({ s }: { s: GambitState }) {
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="mt-4 rounded-sm border border-[var(--border)] px-3 py-2">
+        <InsightsGraph
+          series={[
+            { data: s.viewerHistory, color: '#6aa9ff', label: 'Viewers', scaleGroup: 'viewers' },
+            { data: s.activeViewersHistory, color: 'var(--kick-green)', label: 'Active Viewers', scaleGroup: 'viewers' },
+            { data: s.actionsHistory, color: 'var(--warn)', label: 'Actions' },
+          ]}
+          interventions={interventions}
+          elapsedS={s.historyElapsedS}
+        />
       </div>
 
       {tab === 'tactics' ? (

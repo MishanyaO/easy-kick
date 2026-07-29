@@ -37,6 +37,12 @@ class Metrics:
         """Kick-native signals that someone did more than type."""
         return self.redemptions + self.kicks_gifted + self.follows
 
+    @property
+    def actions_per_min(self) -> float:
+        """Comments plus reactions: chat messages and channel-point spend, same window."""
+        scale = 60.0 / WINDOW_S
+        return self.msgs_per_min + (self.redemptions + self.kicks_gifted) * scale
+
 
 class EngagementMonitor:
     def __init__(self, store: EventStore, context: StreamContext, window_s: float = WINDOW_S,

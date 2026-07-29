@@ -51,6 +51,11 @@ curl -X POST <ngrok-url>/subscriptions -H 'Content-Type: application/json' -d '{
 Chat in your channel (`kick.com/<your-username>`) now appears in the dashboard. Tokens are
 in-memory, so repeat this step after a backend restart.
 
+## Query params
+
+- `?kick` mounts the same live surfaces inside a replica of dashboard.kick.com/stream.
+- `?insights` mounts the Review drawer as its own page, at full viewport.
+
 ---
 
 `npm test` runs the backend suite. See [server/README.md](server/README.md) for endpoints,

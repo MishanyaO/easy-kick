@@ -16,12 +16,15 @@ class SpyBandit:
 
     def __init__(self, arm: Arm = Arm.EMOTE_RALLY, raises: bool = False):
         self.arm, self.raises, self.updates = arm, raises, []
+        self.last_eligible = None
         self.cells = {(s, a): Posterior() for s in ChatState for a in BANDIT_ARMS}
 
-    def select(self, state: ChatState) -> Decision:
+    def select(self, state: ChatState, eligible=BANDIT_ARMS) -> Decision:
         if self.raises:
             raise RuntimeError("degenerate posterior")
-        return Decision(state, self.arm, {}, 1.0)
+        self.last_eligible = tuple(eligible)
+        arm = self.arm if self.arm in eligible else eligible[0]
+        return Decision(state, arm, {}, 1.0, tuple(eligible))
 
     def update(self, state: ChatState, arm: Arm, reward: float) -> None:
         self.updates.append((state, arm, reward))
@@ -35,10 +38,15 @@ def build(arm: Arm = Arm.EMOTE_RALLY, raises: bool = False, autonomy: Autonomy =
     monitor = EngagementMonitor(store, context)
     bandit = SpyBandit(arm, raises)
     frames, fires = [], []
+
+    def perform(action_id, selected_arm, state, card):
+        fires.append((selected_arm, state, card))
+        return True
+
     controller = Controller(
         monitor=monitor, bandit=bandit, rewards=RewardBook(monitor), context=context,
         store=store, publish=lambda t, p: frames.append((t, p)),
-        perform=lambda a, s, c: fires.append((a, s, c)),
+        perform=perform,
     )
     controller.autonomy = dict.fromkeys(controller.autonomy, autonomy)
     return controller, bandit, context, store, frames, fires
@@ -55,8 +63,16 @@ def results(frames):
     return [p for t, p in frames if t == "controller.result"]
 
 
+def prime_control(controller: Controller, now: float = 800) -> None:
+    window = controller._rewards.open(
+        "control", ChatState.STEADY, Arm.NOTHING, now, fired=False
+    )
+    controller._rewards.close(window, now + WINDOW_S)
+
+
 def test_a_decision_fires_opens_a_window_and_scores_it_on_close():
     controller, bandit, _, _, frames, fires = build()
+    prime_control(controller)
 
     controller.tick(1000)
     assert [arm for arm, _, _ in fires] == [Arm.EMOTE_RALLY]
@@ -66,6 +82,22 @@ def test_a_decision_fires_opens_a_window_and_scores_it_on_close():
     assert [(state, arm) for state, arm, _ in bandit.updates] == [(ChatState.STEADY,
                                                                    Arm.EMOTE_RALLY)]
     assert results(frames)[0]["outcome"] == "fired"
+    assert results(frames)[0]["contaminated"] is None
+
+
+def test_a_trial_in_the_previous_actions_shadow_does_not_train():
+    controller, bandit, _, _, frames, _ = build()
+    prime_control(controller)
+
+    controller.tick(1000)
+    controller.tick(1000 + WINDOW_S)
+    assert len(bandit.updates) == 1
+
+    controller.tick(1091)  # past the 90s cooldown, still inside the 120s shadow
+    controller.tick(1091 + WINDOW_S)
+
+    assert len(bandit.updates) == 1
+    assert results(frames)[1]["contaminated"]
 
 
 def test_nothing_decisions_still_open_a_window_and_update_the_posterior():
@@ -73,6 +105,8 @@ def test_nothing_decisions_still_open_a_window_and_update_the_posterior():
 
     controller.tick(1000)
     controller.tick(1000 + WINDOW_S)
+    assert not bandit.updates  # the first quiet window establishes the control
+    controller.tick(1000 + 2 * WINDOW_S)
 
     assert not fires
     assert [arm for _, arm, _ in bandit.updates] == [Arm.NOTHING]
@@ -143,8 +177,9 @@ def test_a_dismissed_card_never_fired_so_it_cannot_score_the_arm():
     assert not bandit.updates  # the window was voided, not scored
 
 
-def test_an_approved_card_fires_and_the_window_runs_on():
+def test_an_approved_card_starts_a_fresh_window_and_stays_observational():
     controller, bandit, _, _, frames, fires = build(arm=Arm.CHAT_POLL, autonomy=Autonomy.ASK)
+    prime_control(controller)
 
     controller.tick(1000)
     action = next(p for t, p in frames if t == "controller.action")
@@ -154,7 +189,10 @@ def test_an_approved_card_fires_and_the_window_runs_on():
     assert controller.approvals[Arm.CHAT_POLL] == 1
 
     controller.tick(1000 + WINDOW_S)
-    assert [arm for _, arm, _ in bandit.updates] == [Arm.CHAT_POLL]
+    assert not results(frames)  # approval at 1005 means the trial closes at 1065
+    controller.tick(1005 + WINDOW_S)
+    assert not bandit.updates  # streamer-approved timing is not randomized evidence
+    assert results(frames)[0]["origin"] == "approved"
     assert results(frames)[0]["outcome"] == "fired"
 
 
@@ -175,6 +213,57 @@ def test_an_arm_switched_off_is_a_rail():
         controller.tick(t)
 
     assert not fires and not bandit.updates
+
+
+def test_a_disabled_arm_is_removed_before_selection():
+    controller, bandit, _, _, _, fires = build(arm=Arm.CHAT_POLL)
+    controller.autonomy[Arm.CHAT_POLL] = Autonomy.OFF
+
+    controller.tick(1000)
+
+    assert Arm.CHAT_POLL not in bandit.last_eligible
+    assert all(arm is not Arm.CHAT_POLL for arm, _, _ in fires)
+
+
+def test_nothing_cannot_be_disabled_because_it_is_the_control():
+    controller, bandit, _, _, _, _ = build(arm=Arm.NOTHING)
+    controller.autonomy[Arm.NOTHING] = Autonomy.OFF
+
+    controller.tick(1000)
+
+    assert Arm.NOTHING in bandit.last_eligible
+
+
+def test_a_failed_delivery_opens_no_trial_and_updates_nothing():
+    controller, bandit, _, _, frames, _ = build()
+    controller.perform = lambda action_id, arm, state, card: False
+
+    controller.tick(1000)
+    action = next(p for t, p in frames if t == "controller.action")
+    assert controller._window is None
+
+    assert controller.delivery_failed(action["id"], "Kick rejected it")
+    controller.tick(1000 + WINDOW_S)
+
+    assert not bandit.updates
+    assert results(frames)[0]["outcome"] == "send_failed"
+    assert results(frames)[0]["contaminated"] == "Kick rejected it"
+
+
+def test_live_controller_waits_for_channel_and_warmup_readiness():
+    controller, _, context, _, _, fires = build()
+    controller._require_live = True
+    controller._warmup_s = 60
+    context.started_at = 1000
+
+    context.is_live = False
+    controller.tick(1100)
+    context.is_live = True
+    controller.tick(1050)
+    assert not fires
+
+    controller.tick(1060)
+    assert fires
 
 
 def test_the_kill_switch_stops_decisions_entirely():
@@ -313,6 +402,7 @@ def test_the_context_frame_carries_the_three_live_graph_series():
 
 def test_manual_mode_never_touches_the_bandit():
     controller, bandit, _, _, _, fires = build(raises=True)
+    prime_control(controller)
     controller.mode = Mode.MANUAL
     controller.fire_rate = {Arm.EMOTE_RALLY: 1e6}  # certain to fire this tick
 

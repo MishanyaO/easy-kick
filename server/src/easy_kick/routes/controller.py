@@ -7,13 +7,14 @@ import time
 from contextlib import suppress
 from dataclasses import dataclass, field
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from ..config import PROJECT_ROOT
-from ..controller import TICK_S, Controller, build_stack
+from ..controller import TICK_S, Controller, build_stack, hub_publisher
 from ..gym import POLICIES, Gym, simulate
-from ..models import Arm, Autonomy, Mode
+from ..models import BANDIT_ARMS, Arm, Autonomy, Mode
+from ..security import require_control_key
 
 router = APIRouter(tags=["controller"])
 gym_router = APIRouter(prefix="/dev/gym", tags=["development"])
@@ -67,23 +68,42 @@ async def _run_gym(app, state: GymState) -> None:
 def gym_fire(app, state: GymState):
     """In the gym the bot's line lands in chat like any other message, and the personas
     react to it. Live, the same callback posts through `chat:write`."""
-    def fire(arm: Arm, chat_state, card) -> None:
+    def fire(action_id: str, arm: Arm, chat_state, card) -> bool:
         state.gym.say(card.body)
         state.gym.fire(arm, chat_state, card.options)
+        return True
     return fire
 
 
 def live_fire(app):
-    def fire(arm: Arm, chat_state, card) -> None:
-        asyncio.create_task(_post(app, card.body))
+    def fire(action_id: str, arm: Arm, chat_state, card) -> bool:
+        asyncio.create_task(_post(app, action_id, card.body))
+        return False  # confirmation arrives through the callback below
     return fire
 
 
-async def _post(app, content: str) -> None:
+async def _post(app, action_id: str, content: str) -> None:
     try:
-        await app.state.kick.send_chat(content, app.state.settings.broadcaster_user_id)
-    except Exception:
+        response = await app.state.kick.send_chat(
+            content, app.state.settings.broadcaster_user_id
+        )
+        if not _is_sent(response):
+            app.state.controller.delivery_failed(
+                action_id, "Kick did not confirm that the message was sent"
+            )
+            return
+    except Exception as exc:
         logger.warning("could not post to Kick chat", exc_info=True)
+        app.state.controller.delivery_failed(action_id, str(exc))
+        return
+    app.state.controller.delivery_succeeded(action_id, time.time())
+
+
+def _is_sent(response: dict) -> bool:
+    """Kick has returned both object and one-row-list data shapes; fail closed."""
+    data = response.get("data")
+    rows = data if isinstance(data, list) else [data]
+    return any(isinstance(row, dict) and row.get("is_sent") is True for row in rows)
 
 
 @gym_router.post("")
@@ -104,6 +124,7 @@ async def start_gym(request: Request, speed: float = Query(1.0, gt=0, le=100),
         state.speed, state.seed = speed, seed
         state.gym = Gym(seed=seed, store=request.app.state.store, hub=request.app.state.hub)
         context.started_at = time.time()
+        context.is_live = True
 
     request.app.state.controller.perform = gym_fire(request.app, state)
     state.task = asyncio.create_task(_run_gym(request.app, state))
@@ -165,6 +186,10 @@ async def stop_gym(request: Request) -> dict:
 def _reset_shared_state(app) -> None:
     """Rebuild everything the gym touches, the same way `create_app` builds it fresh."""
     settings = app.state.settings
+    app.state.controller_history.reset()
+    hub_publisher(app.state.hub, app.state.controller_history)(
+        "controller.reset", {"type": "reset"}
+    )
     build_stack(app, settings, perform=live_fire(app) if settings.controller_enabled else None)
 
 
@@ -197,7 +222,7 @@ async def race(seed: int = 0, decisions: int = Query(60, ge=1, le=2000),
 def _now(app) -> float:
     """A running gym owns the clock; otherwise it is wall time."""
     state: GymState | None = getattr(app.state, "gym", None)
-    return state.gym.now if state and state.running else time.time()
+    return state.gym.now if state and state.gym else time.time()
 
 
 @router.get("/controller/policy")
@@ -205,7 +230,10 @@ async def policy(request: Request) -> dict:
     return request.app.state.controller.policy()
 
 
-@router.post("/controller/action/{action_id}/{verdict}")
+@router.post(
+    "/controller/action/{action_id}/{verdict}",
+    dependencies=[Depends(require_control_key)],
+)
 async def act_on_card(action_id: str, verdict: str, request: Request) -> dict:
     controller: Controller = request.app.state.controller
     if verdict not in ("send", "dismiss"):
@@ -228,10 +256,15 @@ class AutonomyUpdate(BaseModel):
     fire_rate: dict[Arm, float] | None = None
 
 
-@router.put("/controller/autonomy")
+@router.put("/controller/autonomy", dependencies=[Depends(require_control_key)])
 async def set_autonomy(body: AutonomyUpdate, request: Request) -> dict:
     controller: Controller = request.app.state.controller
     if body.autonomy:
+        if body.autonomy.get(Arm.NOTHING, Autonomy.AUTO) is not Autonomy.AUTO:
+            raise HTTPException(
+                status_code=422,
+                detail="'nothing' must stay enabled to preserve the control group",
+            )
         controller.autonomy.update(body.autonomy)
     if body.enabled is not None:
         controller.enabled = body.enabled
@@ -249,4 +282,11 @@ async def eval_results() -> dict:
     """Whatever `python -m easy_kick.eval.run_eval` last wrote."""
     if not EVAL_RESULTS.exists():
         raise HTTPException(status_code=404, detail="run easy_kick.eval.run_eval first")
-    return json.loads(EVAL_RESULTS.read_text(encoding="utf-8"))
+    result = json.loads(EVAL_RESULTS.read_text(encoding="utf-8"))
+    expected = [arm.value for arm in BANDIT_ARMS]
+    if result.get("config", {}).get("arms") != expected:
+        raise HTTPException(
+            status_code=409,
+            detail="evaluation artifact is stale; regenerate it with the current arm set",
+        )
+    return result

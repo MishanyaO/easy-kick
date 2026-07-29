@@ -51,6 +51,7 @@ export type ContextFrame = {
   actions_per_min: number; // comments + reactions (redemptions, gifts) — same window
   uptime_s: number;
   streamer_speaking?: boolean;
+  is_live?: boolean | null;
 };
 
 export type ActionFrame = {
@@ -67,7 +68,7 @@ export type ActionFrame = {
   body: string; // the line that goes into chat
   options: string[];
   auto_fire: boolean;
-  status: 'suggested' | 'live' | 'closed' | 'dismissed';
+  status: 'suggested' | 'sending' | 'live' | 'closed' | 'dismissed';
   // contract v2 asks for expires_in_s — not on the wire yet
 };
 
@@ -77,6 +78,7 @@ export type ResultFrame = {
   action_id: string;
   state: ChatState;
   arm: Arm;
+  origin: 'autonomous' | 'approved' | 'manual';
   votes: Record<string, number>;
   engagement_delta: number; // matched-control lift, in participation points
   reward: number; // [0,1] after the logistic squash
@@ -86,7 +88,7 @@ export type ResultFrame = {
   contaminated: string | null;
   /** Clean same-state windows the matched control averaged. 0 means there was no control. */
   controls: number;
-  outcome: 'fired' | 'dismissed' | 'skipped' | 'railed';
+  outcome: 'fired' | 'dismissed' | 'skipped' | 'railed' | 'send_failed';
   // contract v2 asks for label / replies / held_s / raiders — not yet
 };
 
@@ -121,8 +123,27 @@ export type BanditFrame = {
   };
 };
 
+export type ControllerResetFrame = {
+  type: 'reset';
+};
+
+export type ControllerFrame = (
+  | ContextFrame
+  | ActionFrame
+  | ResultFrame
+  | BanditFrame
+  | PollFrame
+  | DigestFrame
+  | ControllerResetFrame
+) & {
+  /** Monotonic within one backend-owned gym/live session. */
+  seq: number;
+  session_id: string;
+};
+
 export type Frame =
-  | ChatFrame | ContextFrame | ActionFrame | ResultFrame | BanditFrame | PollFrame | DigestFrame;
+  | ChatFrame
+  | ControllerFrame;
 
 /** UI vocabulary derived from his numbers — the backend does not send these. */
 export type VerdictLabel = 'Worked' | 'Neutral' | 'Backfired' | "Can't tell";
@@ -159,6 +180,84 @@ export const VERDICT_COLOR: Record<VerdictLabel, string> = {
   Backfired: 'var(--danger)',
   "Can't tell": 'var(--warn)',
 };
+
+/** What the verdict means for the stream, said the way a streamer would say it. */
+export const VERDICT_BLURB: Record<VerdictLabel, string> = {
+  Worked: 'more of your viewers started talking',
+  Neutral: 'chat carried on much as it was',
+  Backfired: 'fewer of your viewers talked after it',
+  "Can't tell": 'this one cannot be read as an effect',
+};
+
+/**
+ * The product name for a tactic. `arm` is the wire name and it leaks — `emote_rally` in a
+ * ledger a streamer reads is us showing them our variable names.
+ */
+export const ARM_LABEL: Record<Arm, string> = {
+  nothing: 'Stayed quiet',
+  emote_rally: 'Emote rally',
+  chat_poll: 'Poll',
+  quiz: 'Quiz',
+  chat_digest: 'Chat digest',
+  prediction: 'Prediction',
+};
+
+/** What the tactic actually did in chat, for the expanded row. */
+export const ARM_BLURB: Record<Arm, string> = {
+  nothing: 'held back and let chat run on its own',
+  emote_rally: 'asked chat to spam an emote together',
+  chat_poll: 'put a question to chat and counted the replies',
+  quiz: 'asked chat something with a right answer',
+  chat_digest: 'summarised what chat was on about — for you, never posted',
+  prediction: 'opened a call for chat to back a side',
+};
+
+/** The chat state as a clause in a sentence, rather than a chip. */
+export const STATE_PHRASE: Record<ChatState, string> = {
+  lull: 'chat had gone quiet',
+  steady: 'chat was ticking along',
+  spike: 'chat was already going off',
+};
+
+/** Who decided to send it, in the streamer's terms. Short: it sits in a byline. */
+export const ORIGIN_LABEL: Record<ResultFrame['origin'], string> = {
+  autonomous: 'sent automatically',
+  approved: 'you approved it',
+  manual: 'you sent it',
+};
+
+/**
+ * A lift in participation points read back as people.
+ *
+ * Points are the right unit to compare windows in and the wrong unit to feel anything
+ * about: "+1.8 pts" and "about 17 more people talking" are the same fact, and only one of
+ * them is worth putting on a stream deck. Null when there is no viewer count to multiply
+ * by — inventing a denominator to get a friendlier sentence is the exact species of
+ * confident nonsense the rest of this UI refuses to print.
+ */
+export function peopleMoved(delta: number, viewers: number | null | undefined): string | null {
+  if (!viewers) return null;
+  const n = delta * viewers;
+  // Under half a person is not a result, and "0 more people talking" is a worse way of
+  // saying "nothing moved" than the verdict already does.
+  if (Math.abs(n) < 0.5) return null;
+  const c = Math.round(Math.abs(n));
+  return `about ${c} ${n > 0 ? 'more' : 'fewer'} ${c === 1 ? 'person' : 'people'} talking`;
+}
+
+/** The same conversion as `peopleMoved`, as a signed count for a dense ledger row. */
+export function peopleShort(delta: number, viewers: number | null | undefined): string | null {
+  if (!viewers) return null;
+  const n = delta * viewers;
+  if (Math.abs(n) < 0.5) return null;
+  return `≈ ${n > 0 ? '+' : '−'}${Math.round(Math.abs(n))} people`;
+}
+
+/** "Time Live" style elapsed clock — the gym's virtual second, not the wall clock. */
+export function clock(s: number): string {
+  const p = (n: number) => String(Math.floor(n)).padStart(2, '0');
+  return `${p(s / 3600)}:${p((s % 3600) / 60)}:${p(s % 60)}`;
+}
 
 /**
  * Why the bandit picked this arm, in a sentence.

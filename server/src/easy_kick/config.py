@@ -8,7 +8,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=PROJECT_ROOT / ".env", env_prefix="KICK_")
+    # Ignore retired keys in a developer's local .env so removing an optional feature does
+    # not make the entire server unbootable.
+    model_config = SettingsConfigDict(
+        env_file=PROJECT_ROOT / ".env",
+        env_prefix="KICK_",
+        extra="ignore",
+    )
 
     client_id: str = ""
     client_secret: str = ""
@@ -22,6 +28,10 @@ class Settings(BaseSettings):
     # drives the same loop on virtual time instead, so only one of the two ticks it.
     controller_enabled: bool = False
     broadcaster_user_id: int | None = None
+    bot_user_id: str | None = None
+    controller_warmup_s: float = 60.0
+    # Protects mutation routes when set. The simulator may leave it empty for local use.
+    control_api_key: str = ""
     # Browser origins allowed to call the read API (the Vite dev server by default).
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 

@@ -46,12 +46,16 @@ class Metrics:
 
 class EngagementMonitor:
     def __init__(self, store: EventStore, context: StreamContext, window_s: float = WINDOW_S,
-                 bot_username: str = BOT_NAME):
+                 bot_username: str = BOT_NAME, bot_user_id: str | None = None):
         self._store = store
         self._context = context
         self._window_s = window_s
         self._bot = bot_username
+        self._bot_user_id = bot_user_id
         self.baseline: float | None = None
+
+    def reset_baseline(self) -> None:
+        self.baseline = None
 
     def measure(self, now: float) -> Metrics:
         """Window metrics at time `now`. Pure, so reward scoring can call it freely."""
@@ -69,12 +73,20 @@ class EngagementMonitor:
                 continue
             match ev.type:
                 case EventType.CHAT_MESSAGE_SENT:
-                    sender = ev.username("sender")
-                    if sender == self._bot:
+                    sender_node = ev.payload.get("sender") or {}
+                    sender = sender_node.get("username")
+                    sender_id = sender_node.get("user_id")
+                    if sender == self._bot or (
+                        self._bot_user_id is not None
+                        and sender_id is not None
+                        and str(sender_id) == self._bot_user_id
+                    ):
                         continue  # measuring our own line as engagement flatters every fire
                     msgs += 1
-                    if sender:
-                        chatters.add(sender)
+                    if sender_id is not None:
+                        chatters.add(f"id:{sender_id}")
+                    elif sender:
+                        chatters.add(f"name:{sender}")
                 case EventType.REWARD_REDEMPTION_UPDATED:
                     redemptions += 1
                 case EventType.KICKS_GIFTED:

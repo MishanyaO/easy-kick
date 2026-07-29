@@ -56,6 +56,14 @@ class Mode(StrEnum):
     MANUAL = "manual"
 
 
+class TrialOrigin(StrEnum):
+    """How an action reached chat. Only autonomous trials are randomized evidence."""
+
+    AUTONOMOUS = "autonomous"
+    APPROVED = "approved"
+    MANUAL = "manual"
+
+
 # What the bandit chooses between. `PREDICTION` stakes viewers' Channel Points, so it stays
 # a manual card rather than an arm we explore. `CHAT_DIGEST` is a streamer-only card triggered
 # by its own eligibility rule, not selected by Thompson sampling, so it's also excluded here.

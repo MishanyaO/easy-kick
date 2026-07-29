@@ -35,8 +35,10 @@ ngrok http 8000        # copy the https URL
 ```
 
 Create a Kick app (Settings → Developer), setting redirect URI to `<ngrok-url>/auth/callback`
-and webhook URL to `<ngrok-url>/webhook`. Tick **Read user information** and **Subscribe to
-events**. Put the client ID, secret, and both URLs into `server/.env`.
+and webhook URL to `<ngrok-url>/webhook`. Enable user read, event subscriptions, channel read,
+and chat write. Put the client ID, secret, both URLs, broadcaster ID, and a
+`KICK_CONTROL_API_KEY` into `server/.env`; expose the same key to the dashboard as
+`VITE_CONTROL_API_KEY`.
 
 ```bash
 npm run dev

@@ -19,8 +19,10 @@ from pathlib import Path
 from ..config import PROJECT_ROOT
 from ..controller import insights
 from ..gym import POLICIES, build_policy, simulate
+from ..models import BANDIT_ARMS
 
 OUTPUT = PROJECT_ROOT / "data" / "eval_results.json"
+SCHEMA_VERSION = 2
 
 
 def head_to_head(seed: int, decisions: int) -> dict:
@@ -112,7 +114,11 @@ def main() -> None:
     args = parser.parse_args()
 
     results = {
-        "config": vars(args),
+        "config": {
+            **vars(args),
+            "schema_version": SCHEMA_VERSION,
+            "arms": [arm.value for arm in BANDIT_ARMS],
+        },
         "head_to_head": head_to_head(args.seed, args.decisions),
         "estimators": estimators(args.seed, args.decisions),
         "policies": policy_comparison(args.worlds, args.decisions),

@@ -6,6 +6,7 @@ awkwardness, and a narrowing distribution is something you can actually put on a
 """
 
 import random
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from .models import BANDIT_ARMS, Arm, ChatState
@@ -17,6 +18,8 @@ PRIOR = 1.0
 DECAY = 0.99
 MIN_PULLS = 3  # below this a cell is untrusted and we sample the prior instead
 PROPENSITY_SAMPLES = 200
+# Keep collecting a clean counterfactual even after Thompson sampling starts exploiting.
+MIN_NOTHING_PROBABILITY = 0.15
 
 
 @dataclass
@@ -36,25 +39,39 @@ class Decision:
     arm: Arm
     samples: dict[Arm, float]
     propensity: float
+    eligible: tuple[Arm, ...] = ()
+    forced_control: bool = False
 
     def frame(self) -> dict:
         return {"state": self.state, "samples": self.samples,
-                "chosen": self.arm, "propensity": self.propensity}
+                "chosen": self.arm, "propensity": self.propensity,
+                "eligible": self.eligible, "forced_control": self.forced_control}
 
 
 class Bandit:
     def __init__(self, seed: int | None = None, arms=BANDIT_ARMS, decay: float = DECAY):
         self._rng = random.Random(seed)
+        # Logging a propensity must not change the future policy trajectory.
+        self._propensity_rng = random.Random(None if seed is None else seed + 1)
         self._decay = decay
         self.arms = tuple(arms)
         self.cells = {(s, a): Posterior() for s in ChatState for a in self.arms}
         self.decisions = 0
 
-    def select(self, state: ChatState) -> Decision:
-        samples = {arm: self._draw(state, arm) for arm in self.arms}
-        arm = max(samples, key=samples.__getitem__)
+    def select(
+        self, state: ChatState, eligible: Iterable[Arm] | None = None
+    ) -> Decision:
+        eligible = self._eligible(eligible)
+        samples = {arm: self._draw(state, arm) for arm in eligible}
+        forced_control = (
+            Arm.NOTHING in eligible
+            and len(eligible) > 1
+            and self._rng.random() < MIN_NOTHING_PROBABILITY
+        )
+        arm = Arm.NOTHING if forced_control else max(samples, key=samples.__getitem__)
         self.decisions += 1
-        return Decision(state, arm, samples, self._propensity(state, arm))
+        propensity = self._propensity(state, arm, eligible)
+        return Decision(state, arm, samples, propensity, eligible, forced_control)
 
     def update(self, state: ChatState, arm: Arm, reward: float) -> None:
         """Fold a reward in [0, 1] into the posterior.
@@ -90,22 +107,37 @@ class Bandit:
             if cell:
                 cell.alpha, cell.beta, cell.pulls = row["alpha"], row["beta"], row["pulls"]
 
-    def _draw(self, state: ChatState, arm: Arm) -> float:
-        cell = self.cells[state, arm]
-        if cell.pulls < MIN_PULLS:
-            return self._rng.betavariate(PRIOR, PRIOR)  # cold-start floor: explore first
-        return self._rng.betavariate(cell.alpha, cell.beta)
-
-    def _propensity(self, state: ChatState, arm: Arm) -> float:
+    def _propensity(self, state: ChatState, arm: Arm,
+                    eligible: tuple[Arm, ...]) -> float:
         """P(this arm wins) under the current posteriors, by Monte Carlo.
 
         One extra logged field, and the whole answer to off-policy evaluation later.
         """
         wins = 0
         for _ in range(PROPENSITY_SAMPLES):
-            draws = {a: self._draw(state, a) for a in self.arms}
+            draws = {a: self._draw(state, a, rng=self._propensity_rng) for a in eligible}
             wins += max(draws, key=draws.__getitem__) == arm
-        return wins / PROPENSITY_SAMPLES
+        thompson = wins / PROPENSITY_SAMPLES
+        if Arm.NOTHING not in eligible or len(eligible) == 1:
+            return thompson
+        if arm is Arm.NOTHING:
+            return MIN_NOTHING_PROBABILITY + (1 - MIN_NOTHING_PROBABILITY) * thompson
+        return (1 - MIN_NOTHING_PROBABILITY) * thompson
+
+    def _eligible(self, eligible: Iterable[Arm] | None) -> tuple[Arm, ...]:
+        requested = self.arms if eligible is None else tuple(eligible)
+        resolved = tuple(arm for arm in requested if arm in self.arms)
+        if not resolved:
+            raise ValueError("no eligible arms")
+        return resolved
+
+    def _draw(self, state: ChatState, arm: Arm,
+              *, rng: random.Random | None = None) -> float:
+        rng = rng or self._rng
+        cell = self.cells[state, arm]
+        if cell.pulls < MIN_PULLS:
+            return rng.betavariate(PRIOR, PRIOR)  # cold-start floor: explore first
+        return rng.betavariate(cell.alpha, cell.beta)
 
 
 # Baselines. They wear the Bandit interface so they are measured through exactly the same
@@ -124,9 +156,12 @@ class RandomPolicy:
     def __post_init__(self) -> None:
         self._rng = random.Random(self.seed)
 
-    def select(self, state: ChatState) -> Decision:
+    def select(
+        self, state: ChatState, eligible: Iterable[Arm] | None = None
+    ) -> Decision:
+        eligible = tuple(eligible or self.arms)
         self.decisions += 1
-        return Decision(state, self._rng.choice(self.arms), {}, 1 / len(self.arms))
+        return Decision(state, self._rng.choice(eligible), {}, 1 / len(eligible), eligible)
 
     def update(self, state: ChatState, arm: Arm, reward: float) -> None:
         pass
@@ -144,10 +179,15 @@ class TimerPolicy:
     every: int = 15
     decisions: int = 0
 
-    def select(self, state: ChatState) -> Decision:
+    def select(
+        self, state: ChatState, eligible: Iterable[Arm] | None = None
+    ) -> Decision:
+        eligible = tuple(eligible or (Arm.NOTHING, self.arm))
         self.decisions += 1
         due = self.decisions % self.every == 0
-        return Decision(state, self.arm if due else Arm.NOTHING, {}, 1.0)
+        wanted = self.arm if due else Arm.NOTHING
+        arm = wanted if wanted in eligible else eligible[0]
+        return Decision(state, arm, {}, 1.0, eligible)
 
     def update(self, state: ChatState, arm: Arm, reward: float) -> None:
         pass
@@ -168,10 +208,15 @@ class ReactivePolicy:
     arm: Arm = Arm.EMOTE_RALLY
     decisions: int = 0
 
-    def select(self, state: ChatState) -> Decision:
+    def select(
+        self, state: ChatState, eligible: Iterable[Arm] | None = None
+    ) -> Decision:
+        eligible = tuple(eligible or (Arm.NOTHING, self.arm))
         self.decisions += 1
         fire = state is ChatState.LULL
-        return Decision(state, self.arm if fire else Arm.NOTHING, {}, 1.0)
+        wanted = self.arm if fire else Arm.NOTHING
+        arm = wanted if wanted in eligible else eligible[0]
+        return Decision(state, arm, {}, 1.0, eligible)
 
     def update(self, state: ChatState, arm: Arm, reward: float) -> None:
         pass
@@ -186,9 +231,13 @@ class SilentPolicy:
 
     decisions: int = 0
 
-    def select(self, state: ChatState) -> Decision:
+    def select(
+        self, state: ChatState, eligible: Iterable[Arm] | None = None
+    ) -> Decision:
+        eligible = tuple(eligible or (Arm.NOTHING,))
         self.decisions += 1
-        return Decision(state, Arm.NOTHING, {}, 1.0)
+        arm = Arm.NOTHING if Arm.NOTHING in eligible else eligible[0]
+        return Decision(state, arm, {}, 1.0, eligible)
 
     def update(self, state: ChatState, arm: Arm, reward: float) -> None:
         pass

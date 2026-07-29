@@ -9,7 +9,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from .engagement import EngagementMonitor
-from .models import Arm, ChatState
+from .models import Arm, ChatState, TrialOrigin
 
 WINDOW_S = 60.0
 # The score is a *relative* lift — "participation went up a fifth" — so these constants mean
@@ -40,6 +40,7 @@ class Window:
     control_naive: float
     fired: bool
     contaminated: bool
+    origin: TrialOrigin
 
 
 @dataclass(frozen=True)
@@ -66,7 +67,7 @@ class RewardBook:
         self._last_fire_at = now
 
     def open(self, window_id: str, state: ChatState, arm: Arm, now: float,
-             *, fired: bool) -> Window:
+             *, fired: bool, origin: TrialOrigin = TrialOrigin.AUTONOMOUS) -> Window:
         return Window(
             id=window_id,
             state=state,
@@ -76,7 +77,14 @@ class RewardBook:
             control_naive=self._monitor.measure(now).participation,
             fired=fired,
             contaminated=self._contaminated(now),
+            origin=origin,
         )
+
+    def reset_regime(self) -> None:
+        """A new stream/category has no comparable controls from the old regime."""
+        for pool in self._pool.values():
+            pool.clear()
+        self._last_fire_at = None
 
     def close(self, window: Window, now: float) -> Outcome:
         after = self._monitor.measure(now)

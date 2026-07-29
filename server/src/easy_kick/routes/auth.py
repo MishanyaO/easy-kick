@@ -8,7 +8,7 @@ from ..oauth import exchange_code, generate_pkce_pair
 
 router = APIRouter(prefix="/auth")
 
-SCOPES = "user:read events:subscribe"
+SCOPES = "user:read events:subscribe channel:read chat:write"
 
 
 @router.get("/login")

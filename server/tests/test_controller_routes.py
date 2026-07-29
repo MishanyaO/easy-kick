@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import httpx
 
@@ -86,6 +87,30 @@ async def test_autonomy_is_human_set_and_read_back():
     assert app.state.controller.enabled is False
 
 
+async def test_nothing_cannot_be_disabled_through_the_control_surface():
+    app, client = dev_client()
+    async with client:
+        response = await client.put(
+            "/controller/autonomy", json={"autonomy": {"nothing": "off"}}
+        )
+
+    assert response.status_code == 422
+
+
+async def test_control_mutations_require_the_configured_key():
+    app, client = dev_client(control_api_key="stage-secret")
+    async with client:
+        denied = await client.put("/controller/autonomy", json={"enabled": False})
+        allowed = await client.put(
+            "/controller/autonomy",
+            json={"enabled": False},
+            headers={"X-Control-Key": "stage-secret"},
+        )
+
+    assert denied.status_code == 401
+    assert allowed.status_code == 200
+
+
 async def test_mode_and_fire_rate_are_human_set_and_read_back():
     app, client = dev_client()
     async with client:
@@ -126,18 +151,77 @@ async def test_eval_results_says_so_when_the_eval_has_not_been_run(monkeypatch, 
         assert (await client.get("/eval/results")).status_code == 404
 
 
+async def test_eval_results_rejects_a_stale_arm_set(monkeypatch, tmp_path):
+    from easy_kick.routes import controller as controller_routes
+    artifact = tmp_path / "eval.json"
+    artifact.write_text(json.dumps({"config": {"arms": ["old_arm"]}}))
+    monkeypatch.setattr(controller_routes, "EVAL_RESULTS", artifact)
+
+    app, client = dev_client()
+    async with client:
+        response = await client.get("/eval/results")
+
+    assert response.status_code == 409
+
+
+async def test_live_post_activates_only_after_kick_confirms_delivery():
+    from easy_kick.routes.controller import _post
+
+    app, client = dev_client()
+    confirmed = []
+
+    async def send_chat(content, broadcaster_user_id):
+        return {"data": {"is_sent": True}}
+
+    app.state.kick.send_chat = send_chat
+    app.state.controller.delivery_succeeded = (
+        lambda action_id, now: confirmed.append(action_id)
+    )
+    async with client:
+        await _post(app, "action-1", "hello")
+
+    assert confirmed == ["action-1"]
+
+
+async def test_live_post_fails_closed_without_kick_confirmation():
+    from easy_kick.routes.controller import _post
+
+    app, client = dev_client()
+    failed = []
+
+    async def send_chat(content, broadcaster_user_id):
+        return {"data": {"is_sent": False}}
+
+    app.state.kick.send_chat = send_chat
+    app.state.controller.delivery_failed = (
+        lambda action_id, reason: failed.append((action_id, reason))
+    )
+    async with client:
+        await _post(app, "action-1", "hello")
+
+    assert failed and failed[0][0] == "action-1"
+
+
 def test_controller_frames_ride_the_existing_stream_as_their_own_payload():
     from easy_kick.controller import hub_publisher
+    from easy_kick.controller_history import ControllerHistory
     from easy_kick.hub import EventHub
     from easy_kick.models import EventEnvelope, EventType
     from easy_kick.routes.read import _frame
 
     hub = EventHub()
+    history = ControllerHistory()
     with hub.subscribe() as queue:
-        hub_publisher(hub)("controller.bandit", {"type": "bandit", "decisions": 3})
+        hub_publisher(hub, history)(
+            "controller.bandit", {"type": "bandit", "decisions": 3}
+        )
         published = queue.get_nowait()
 
-    assert _frame(published) == 'data: {"type": "bandit", "decisions": 3}\n\n'
+    controller_frame = json.loads(_frame(published).removeprefix("data: "))
+    assert controller_frame["type"] == "bandit"
+    assert controller_frame["decisions"] == 3
+    assert controller_frame["seq"] == 1
+    assert controller_frame["session_id"] == history.session_id
     # Chat still takes the existing path, and everything else is still dropped.
     chat = EventEnvelope(type=EventType.CHAT_MESSAGE_SENT, version="1", message_id="m1",
                          timestamp="2026-07-25T09:00:00Z",
@@ -146,3 +230,23 @@ def test_controller_frames_ride_the_existing_stream_as_their_own_payload():
     assert _frame(EventEnvelope(type=EventType.MODERATION_BANNED, version="1",
                                 message_id="m2", timestamp="2026-07-25T09:00:00Z",
                                 payload={})) is None
+
+
+def test_gym_reset_discards_history_and_notifies_open_streams():
+    from easy_kick.controller import hub_publisher
+    from easy_kick.routes.controller import _reset_shared_state
+
+    app, _ = dev_client()
+    publish = hub_publisher(app.state.hub, app.state.controller_history)
+    publish("controller.context", {"type": "context"})
+    old_session = app.state.controller_history.session_id
+
+    with app.state.hub.subscribe() as queue:
+        _reset_shared_state(app)
+        reset_event = queue.get_nowait()
+
+    frames = app.state.controller_history.snapshot()
+    assert app.state.controller_history.session_id != old_session
+    assert frames == [reset_event.payload]
+    assert reset_event.payload["type"] == "reset"
+    assert reset_event.payload["seq"] == 1

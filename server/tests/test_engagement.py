@@ -8,13 +8,17 @@ from easy_kick.models import ChatState, EventEnvelope, EventType
 from easy_kick.store import EventStore
 
 
-def chat(username: str, at: float, text: str = "hi") -> EventEnvelope:
+def chat(username: str, at: float, text: str = "hi",
+         user_id: int | None = None) -> EventEnvelope:
+    sender = {"username": username}
+    if user_id is not None:
+        sender["user_id"] = user_id
     return EventEnvelope(
         type=EventType.CHAT_MESSAGE_SENT,
         version="1",
         message_id=f"{username}@{at}",
         timestamp=datetime.fromtimestamp(at, tz=timezone.utc).isoformat(),
-        payload={"sender": {"username": username}, "content": text},
+        payload={"sender": sender, "content": text},
     )
 
 
@@ -59,6 +63,15 @@ def test_our_own_chat_line_is_not_audience_engagement():
 
     assert metrics.unique_chatters == 1
     assert metrics.msgs_per_min == pytest.approx(1.0)
+
+
+def test_the_live_posting_identity_is_excluded_by_stable_user_id():
+    store, context = EventStore(), StreamContext(viewer_count=100)
+    monitor = EngagementMonitor(store, context, bot_user_id="42")
+    store.add(chat("renamed_bot", 1000, user_id=42))
+    store.add(chat("viewer", 1010, user_id=7))
+
+    assert monitor.measure(1030).unique_chatters == 1
 
 
 def test_state_is_rated_against_the_channels_own_baseline():

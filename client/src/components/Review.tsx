@@ -7,7 +7,7 @@ import {
   STATE_LABEL, VERDICT_COLOR, labelFor, isControl, points, pct, whyUnattributable,
   type ChatState, type VerdictLabel, type ResultFrame, type ActionFrame,
 } from '../types';
-import Spark from './Spark';
+import InsightsGraph from './InsightsGraph';
 
 type Row = ResultFrame & { action?: ActionFrame };
 type Filter = 'all' | ChatState;
@@ -214,23 +214,6 @@ function Tile({ k, label, set, active, onSelect }: {
   );
 }
 
-/** One of the live trends: viewers, engagement (msgs/min) and unique engaging viewers. */
-function Trend({ label, value, data, color }: {
-  label: string; value: string; data: number[]; color: string;
-}) {
-  return (
-    <div className="min-w-0 flex-1 rounded-sm border border-[var(--border)] px-3 py-2">
-      <div className="flex items-baseline justify-between">
-        <span className="text-[9px] font-bold tracking-[0.2em] text-[var(--text-muted)]">
-          {label}
-        </span>
-        <span className="tnum text-[12px] font-semibold text-[var(--text-primary)]">{value}</span>
-      </div>
-      <div className="mt-1 opacity-80"><Spark data={data} height={20} color={color} /></div>
-    </div>
-  );
-}
-
 export default function Review({ s }: { s: GambitState }) {
   const [tab, setTab] = useState<'actions' | 'tactics'>('actions');
   const [filter, setFilter] = useState<Filter>('all');
@@ -238,6 +221,12 @@ export default function Review({ s }: { s: GambitState }) {
   const rows: Row[] = s.results.filter((r) => filter === 'all' || r.state === filter);
   const fired = rows.filter((r) => r.outcome === 'fired');
   const totalLift = fired.reduce((a, r) => a + r.engagement_delta, 0);
+
+  // `tick` is the history array index a result closed under — history is never
+  // truncated, so it lines up directly with viewerHistory/activeViewersHistory/actionsHistory.
+  const interventions = s.results
+    .filter((r) => r.outcome === 'fired')
+    .map((r) => ({ index: r.tick, result: r }));
 
   return (
     // No height, background or padding of its own — the host owns those, so this
@@ -268,13 +257,15 @@ export default function Review({ s }: { s: GambitState }) {
         </div>
       </div>
 
-      <div className="mt-4 flex gap-2">
-        <Trend label="VIEWERS" color="var(--kick-green)"
-          value={s.context?.viewer_count != null ? String(s.context.viewer_count) : '—'}
-          data={s.viewerSpark} />
-        <Trend label="ACTIONS" color="var(--warn)"
-          value={s.context ? `${s.context.msgs_per_min.toFixed(1)}/min` : '—'}
-          data={s.engagementSpark} />
+      <div className="mt-4 rounded-sm border border-[var(--border)] px-3 py-2">
+        <InsightsGraph
+          series={[
+            { data: s.viewerHistory, color: '#6aa9ff', label: 'Viewers', scaleGroup: 'viewers' },
+            { data: s.activeViewersHistory, color: 'var(--kick-green)', label: 'Active Viewers', scaleGroup: 'viewers' },
+            { data: s.actionsHistory, color: 'var(--warn)', label: 'Actions' },
+          ]}
+          interventions={interventions}
+        />
       </div>
 
       {tab === 'tactics' ? (

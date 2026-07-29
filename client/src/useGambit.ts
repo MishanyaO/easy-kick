@@ -38,6 +38,11 @@ export type GambitState = {
   engagementSpark: number[];
   /** comments + reactions (redemptions, gifts) over time — Session Info's activity graph */
   actionsSpark: number[];
+  /** Same three series, never truncated — Insights shows the whole session and zooms
+   *  into a range, so unlike the strip sparks above it can't drop old samples. */
+  viewerHistory: number[];
+  activeViewersHistory: number[];
+  actionsHistory: number[];
   /** our own most recent chat line. Held OUTSIDE the chat window on purpose: the window
    *  turns over in seconds, and Kick has no pinned messages, so deriving this from the
    *  visible messages means the proof of the ACT step vanishes almost immediately. */
@@ -47,7 +52,10 @@ export type GambitState = {
   /** actions that fired and are being measured, keyed by action id */
   inflight: Record<string, ActionFrame>;
   /** every closed window, newest first */
-  results: (ResultFrame & { action?: ActionFrame })[];
+  results: (ResultFrame & { action?: ActionFrame; tick: number })[];
+  /** context frames received so far — lets a result be placed on the spark timeline
+   *  it closed under, even after that spark's window has scrolled */
+  tick: number;
   bandit: BanditFrame | null;
   /** the poll currently taking votes, if the open window has one */
   poll: PollFrame | null;
@@ -64,8 +72,9 @@ const EMPTY: GambitState = {
   connected: false, chat: [], context: null, spark: [], viewerSpark: [], activeViewersSpark: [],
   engagementSpark: [],
   actionsSpark: [], lastBot: null,
+  viewerHistory: [], activeViewersHistory: [], actionsHistory: [],
   pending: null, inflight: {}, results: [], bandit: null, poll: null, closedPoll: null,
-  digests: [],
+  digests: [], tick: 0,
 };
 
 type Msg =
@@ -120,6 +129,10 @@ function reduce(s: GambitState, m: Msg): GambitState {
         activeViewersSpark: [...s.activeViewersSpark.slice(-MAX_SPARK + 1), f.unique_chatters],
         engagementSpark: [...s.engagementSpark.slice(-MAX_SPARK + 1), f.msgs_per_min],
         actionsSpark: [...s.actionsSpark.slice(-MAX_SPARK + 1), f.actions_per_min],
+        viewerHistory: [...s.viewerHistory, f.viewer_count ?? 0],
+        activeViewersHistory: [...s.activeViewersHistory, f.unique_chatters],
+        actionsHistory: [...s.actionsHistory, f.msgs_per_min],
+        tick: s.tick + 1,
       };
 
     case 'action':
@@ -146,7 +159,7 @@ function reduce(s: GambitState, m: Msg): GambitState {
         ...s,
         inflight: rest,
         // a `nothing` decision closes a window too — keep it, it is a real trial
-        results: [{ ...f, action }, ...s.results].slice(0, 200),
+        results: [{ ...f, action, tick: Math.max(s.tick - 1, 0) }, ...s.results].slice(0, 200),
         pending: s.pending?.id === f.action_id ? null : s.pending,
         poll: wasThisPoll ? null : s.poll,
         // the window that owned the poll is closed, but its final split stays pinned above

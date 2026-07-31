@@ -78,7 +78,7 @@ export type ResultFrame = {
   action_id: string;
   state: ChatState;
   arm: Arm;
-  origin: 'autonomous' | 'approved' | 'manual';
+  origin: 'autonomous' | 'approved' | 'manual' | 'scenario';
   votes: Record<string, number>;
   engagement_delta: number; // matched-control lift, in participation points
   reward: number; // [0,1] after the logistic squash
@@ -235,6 +235,7 @@ export const ORIGIN_LABEL: Record<ResultFrame['origin'], string> = {
   autonomous: 'sent automatically',
   approved: 'you approved it',
   manual: 'you sent it',
+  scenario: 'simulated session',
 };
 
 /**
@@ -261,7 +262,8 @@ export function peopleShort(delta: number, viewers: number | null | undefined): 
   if (!viewers) return null;
   const n = delta * viewers;
   if (Math.abs(n) < 0.5) return null;
-  return `≈ ${n > 0 ? '+' : '−'}${Math.round(Math.abs(n))} people`;
+  const c = Math.round(Math.abs(n));
+  return `≈ ${n > 0 ? '+' : '−'}${c} ${c === 1 ? 'person' : 'people'}`;
 }
 
 /** "Time Live" style elapsed clock — the gym's virtual second, not the wall clock. */
@@ -382,6 +384,10 @@ export const STATE_LABEL: Record<ChatState, string> = {
 
 /** Participation as a percentage, the way a streamer reads it. */
 export const pct = (v: number, dp = 1) => `${(v * 100).toFixed(dp)}%`;
-/** A lift in participation points, signed. */
-export const points = (v: number, dp = 1) =>
-  `${v >= 0 ? '+' : ''}${(v * 100).toFixed(dp)} pts`;
+/** A lift in participation points, signed — except at zero, where a sign is a lie either
+ *  way and `-0.0 pts` reads as a bug rather than as "nothing moved". */
+export const points = (v: number, dp = 1) => {
+  const n = v * 100;
+  if (Math.abs(Number(n.toFixed(dp))) === 0) return `${(0).toFixed(dp)} pts`;
+  return `${n > 0 ? '+' : ''}${n.toFixed(dp)} pts`;
+};

@@ -16,7 +16,11 @@ const controlHeaders = (): Record<string, string> =>
   CONTROL_KEY ? { 'X-Control-Key': CONTROL_KEY } : {};
 
 const MAX_SPARK = 90;
-const BACKLOG = 200; // chat messages replayed on connect // ~3 min of context frames at one every 2s
+/** Chat messages replayed on connect. Generous because a result's transcript reads back
+ *  through this: at the story's ~24 messages a minute, 1000 is around forty minutes of
+ *  scrollback, so most pins on the chart can show the room around them. The pane itself
+ *  only paints its last few hundred. */
+const BACKLOG = 1000;
 
 export type GambitState = {
   connected: boolean;
@@ -302,8 +306,8 @@ export function useGambit() {
 }
 
 export const gym = {
-  start: (speed = 20, seed = 7) =>
-    fetch(`${API_BASE}/dev/gym?speed=${speed}&seed=${seed}`, { method: 'POST' }),
+  start: (speed = 20, seed = 7, mode: 'gym' | 'scenario' = 'gym') =>
+    fetch(`${API_BASE}/dev/gym?speed=${speed}&seed=${seed}&mode=${mode}`, { method: 'POST' }),
   /** Resumes a paused gym in place (same metrics, same "Time Live") if one is paused. */
   pause: () => fetch(`${API_BASE}/dev/gym/pause`, { method: 'POST' }),
   /** Hot-changes the tick rate of a running or paused gym — no restart, takes effect

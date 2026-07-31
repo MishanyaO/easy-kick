@@ -455,35 +455,7 @@ class Controller:
         return self._ballots(window, card)[0]
 
     def _ballots(self, window: Window, card: Card | None) -> tuple[dict[str, int], int]:
-        """The tally, and how many viewers cast a ballot.
-
-        One viewer, one vote. Without this a single person typing `1` twenty times owns the
-        poll — the mechanism that makes a chat poll cheap is the same one that makes it
-        trivial to stuff, and the count is the thing a verdict is read off.
-
-        First vote wins. Chat is a conversation: `2 ... actually no, 1` is a person arguing,
-        not revising a ballot, and last-wins hands the poll to whoever talks most. Iteration
-        runs newest-first, so the earliest ballot is the one that survives the overwrite.
-        """
-        if not card or not card.options:
-            return {}, 0
-        lookup = {_normalise(option): option for option in card.options}
-        ballots: dict[str, str] = {}
-        for ev in self._store.iter_recent():
-            ts = ev.epoch()
-            if ts is not None and ts < window.opened_at:
-                break
-            # `==`, not `is`: EventEnvelope.type is a plain str, so identity never matches.
-            if ev.type != EventType.CHAT_MESSAGE_SENT:
-                continue
-            choice = _vote_for(ev.payload.get("content") or "", lookup)
-            if choice is None or (voter := _voter(ev)) is None:
-                continue
-            ballots[voter] = choice
-        tally = dict.fromkeys(card.options, 0)
-        for choice in ballots.values():
-            tally[choice] += 1
-        return tally, len(ballots)
+        return ballots(self._store, card.options if card else [], window.opened_at)
 
     def _poll_frame(self, window: Window, card: Card, now: float) -> dict:
         """The open poll, published every tick.
@@ -504,6 +476,44 @@ class Controller:
             "voters": voters,
             "closes_in_s": max(0.0, round(window.closes_at - now, 1)),
         }
+
+
+def ballots(
+    store: EventStore, options: list[str] | tuple[str, ...], since: float
+) -> tuple[dict[str, int], int]:
+    """The tally since `since`, and how many viewers cast a ballot.
+
+    One viewer, one vote. Without this a single person typing `1` twenty times owns the
+    poll — the mechanism that makes a chat poll cheap is the same one that makes it
+    trivial to stuff, and the count is the thing a verdict is read off.
+
+    First vote wins. Chat is a conversation: `2 ... actually no, 1` is a person arguing,
+    not revising a ballot, and last-wins hands the poll to whoever talks most. Iteration
+    runs newest-first, so the earliest ballot is the one that survives the overwrite.
+    """
+    if not options:
+        return {}, 0
+    lookup = {_normalise(option): option for option in options}
+    cast: dict[str, str] = {}
+    for ev in store.iter_recent():
+        ts = ev.epoch()
+        if ts is not None and ts < since:
+            break
+        # `==`, not `is`: EventEnvelope.type is a plain str, so identity never matches.
+        if ev.type != EventType.CHAT_MESSAGE_SENT:
+            continue
+        # Our own prompt is in this window too, and `push it or reset?` leads with an
+        # option — counting it would have the bot casting the first ballot in its own poll.
+        if ev.username("sender") == BOT_NAME:
+            continue
+        choice = _vote_for(ev.payload.get("content") or "", lookup)
+        if choice is None or (voter := _voter(ev)) is None:
+            continue
+        cast[voter] = choice
+    tally = dict.fromkeys(options, 0)
+    for choice in cast.values():
+        tally[choice] += 1
+    return tally, len(cast)
 
 
 def insights(bandit) -> list[str]:
@@ -566,6 +576,7 @@ def build_stack(
     settings,
     *,
     perform: Callable[[str, Arm, ChatState, Card], bool] | None = None,
+    bandit_seed: int | None = None,
 ) -> None:
     """Wire StreamContext -> EventStore -> Bandit -> EngagementMonitor -> Controller onto
     `app.state`. Used both at app startup and to reset everything the gym touches, so the two
@@ -573,7 +584,7 @@ def build_stack(
     """
     app.state.context = StreamContext()
     app.state.store = EventStore(maxlen=settings.buffer_size)
-    app.state.bandit = Bandit()
+    app.state.bandit = Bandit(seed=bandit_seed)
     app.state.monitor = EngagementMonitor(
         app.state.store,
         app.state.context,

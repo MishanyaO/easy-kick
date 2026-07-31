@@ -44,6 +44,53 @@ async def test_a_running_gym_writes_chat_into_the_store():
         assert stopped.json()["status"] == "stopped"
 
 
+async def test_the_scenario_runs_through_the_gym_controls():
+    app, client = dev_client()
+    async with client:
+        run_sheet = (await client.get("/dev/gym/scenario")).json()
+        assert run_sheet["scenario"] == "ranked_run"
+        assert len(run_sheet["ground_truth"]) == 9  # three states × three tactics
+
+        started = await client.post(
+            "/dev/gym", params={"mode": "scenario", "speed": 100, "seed": 7}
+        )
+        assert started.status_code == 200
+        assert started.json()["mode"] == "scenario"
+        assert started.json()["beat"] == "in queue"
+
+        for _ in range(400):
+            if any(
+                frame["type"] == "action"
+                for frame in app.state.controller_history.snapshot()
+            ):
+                break
+            await asyncio.sleep(0.01)
+
+        status = (await client.get("/dev/gym")).json()
+        assert status["scenario"] == "ranked_run"
+        assert status["decisions"] > 0
+        assert any(
+            frame["type"] == "action"
+            for frame in app.state.controller_history.snapshot()
+        )
+        # The scenario's evidence lands in the seeded, run-scoped table `stop` throws away.
+        for _ in range(400):
+            if sum(cell.pulls for cell in app.state.bandit.cells.values()) > 0:
+                break
+            await asyncio.sleep(0.01)
+        assert sum(cell.pulls for cell in app.state.bandit.cells.values()) > 0
+
+        paused = await client.post("/dev/gym/pause")
+        assert paused.json()["status"] == "paused"
+        assert paused.json()["mode"] == "scenario"
+
+        resumed = await client.post("/dev/gym")
+        assert resumed.json()["status"] == "running"
+        assert resumed.json()["mode"] == "scenario"
+        assert (await client.delete("/dev/gym")).json()["status"] == "stopped"
+        assert sum(cell.pulls for cell in app.state.bandit.cells.values()) == 0
+
+
 async def test_a_speedrun_returns_scored_decisions_and_a_posterior_table():
     app, client = dev_client()
     async with client:

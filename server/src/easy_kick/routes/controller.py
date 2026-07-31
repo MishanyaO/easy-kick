@@ -6,6 +6,7 @@ import logging
 import time
 from contextlib import suppress
 from dataclasses import dataclass, field
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -14,6 +15,7 @@ from ..config import PROJECT_ROOT
 from ..controller import TICK_S, Controller, build_stack, hub_publisher
 from ..gym import POLICIES, Gym, simulate
 from ..models import BANDIT_ARMS, Arm, Autonomy, Mode
+from ..scenario import Scenario, catalogue
 from ..security import require_control_key
 
 router = APIRouter(tags=["controller"])
@@ -28,9 +30,10 @@ class GymState:
     """The single in-flight gym, and enough detail for a control panel."""
 
     task: asyncio.Task[None] | None = field(default=None, repr=False)
-    gym: Gym | None = field(default=None, repr=False)
+    gym: Gym | Scenario | None = field(default=None, repr=False)
     speed: float = 1.0
     seed: int = 0
+    mode: Literal["gym", "scenario"] = "gym"
     paused_at: float | None = field(default=None, repr=False)
 
     @property
@@ -40,40 +43,67 @@ class GymState:
     @property
     def paused(self) -> bool:
         """Held onto its gym and metrics, just not ticking — a stopped one has neither."""
-        return self.gym is not None and not self.running
+        return (
+            self.gym is not None
+            and not self.running
+            and not getattr(self.gym, "completed", False)
+        )
 
     def status(self) -> dict:
         gym = self.gym
-        status = "running" if self.running else "paused" if self.paused else "idle"
-        return {
+        completed = bool(gym and getattr(gym, "completed", False))
+        status = (
+            "running" if self.running else "paused" if self.paused
+            else "complete" if completed else "idle"
+        )
+        result = {
             "status": status,
+            "mode": self.mode,
             "speed": self.speed,
             "seed": self.seed,
             "virtual_time_s": gym.t if gym else 0.0,
             "viewers": gym.viewers if gym else None,
             "personas": len(gym.personas) if gym else 0,
         }
+        if isinstance(gym, Scenario):
+            result.update(gym.status())
+        return result
 
 
 async def _run_gym(app, state: GymState) -> None:
     """Map virtual time onto wall time at `speed`×, ticking the controller as we go.
 
-    Below 5×, stepping the gym once per `TICK_S` means a real second can pass between
-    chat bursts — every persona's whole `TICK_S`-worth of Poisson-sampled lines lands in
-    one lump. Capping the wall-clock sleep at 1s and stepping the gym by a
-    correspondingly smaller `dt_s` spreads the same messages over more, smaller bursts
-    without changing the total rate. The controller still ticks once per `TICK_S` of
-    virtual time — its decision cadence (cooldowns, fire-rate math) is defined in terms
-    of that constant and must not drift with the finer gym step.
+    The statistical gym measures on a five-second grid. Below 5×, stepping it once per
+    `TICK_S` means a real second can pass between chat bursts — every persona's whole
+    `TICK_S`-worth of Poisson-sampled lines lands in one lump. Capping the wall-clock
+    sleep at 1s and stepping the gym by a correspondingly smaller `dt_s` spreads the same
+    messages over more, smaller bursts without changing the total rate. The controller
+    still ticks once per `TICK_S` of virtual time — its decision cadence (cooldowns,
+    fire-rate math) is defined in terms of that constant and must not drift with the
+    finer gym step.
+
+    The prepared story is event-driven instead: it wakes at the exact next chat arrival,
+    action, result, or measurement boundary rather than quantizing human messages onto a
+    polling clock, and it publishes its own frames and drives its own actions — so the
+    controller stays out of that loop entirely.
     """
     controller: Controller = app.state.controller
-    # A frame before the first sleep, so the dashboard has an uptime to show immediately
-    # rather than a dash for the first `TICK_S/speed` seconds. It cannot decide anything
-    # this early — warmup gates that — so it costs nothing but the frame.
-    app.state.context.viewer_count = state.gym.viewers
-    controller.tick(state.gym.now)
+    if state.mode == "gym":
+        # A frame before the first sleep, so the dashboard has an uptime to show
+        # immediately rather than a dash for the first `TICK_S/speed` seconds. It cannot
+        # decide anything this early — warmup gates that — so it costs nothing but the
+        # frame.
+        app.state.context.viewer_count = state.gym.viewers
+        controller.tick(state.gym.now)
     virtual_since_tick = 0.0
     while True:
+        if state.mode == "scenario":
+            step_s = state.gym.next_due_in()
+            await asyncio.sleep(step_s / state.speed)
+            state.gym.step(step_s)
+            if state.gym.completed:
+                return
+            continue
         wall_s = min(TICK_S / state.speed, 1.0)
         await asyncio.sleep(wall_s)
         dt_s = wall_s * state.speed
@@ -128,7 +158,8 @@ def _is_sent(response: dict) -> bool:
 
 @gym_router.post("")
 async def start_gym(request: Request, speed: float = Query(1.0, gt=0, le=100),
-                    seed: int = 0) -> dict:
+                    seed: int = 0,
+                    mode: Literal["gym", "scenario"] = "gym") -> dict:
     state: GymState = request.app.state.gym
     if state.running:
         raise HTTPException(status_code=409, detail="a gym is already running")
@@ -141,20 +172,48 @@ async def start_gym(request: Request, speed: float = Query(1.0, gt=0, le=100),
             context.started_at += time.time() - state.paused_at
         state.paused_at = None
     else:
-        state.speed, state.seed = speed, seed
-        state.gym = Gym(seed=seed, store=request.app.state.store, hub=request.app.state.hub)
+        # A prepared run always starts clean (including its first run), while a completed
+        # run remains inspectable until Replay or Stop.
+        if state.gym is not None or mode == "scenario":
+            _reset_shared_state(
+                request.app, bandit_seed=seed if mode == "scenario" else None
+            )
+            context = request.app.state.context
+        state.speed, state.seed, state.mode = speed, seed, mode
+        if mode == "scenario":
+            state.gym = Scenario(
+                seed=seed,
+                store=request.app.state.store,
+                hub=request.app.state.hub,
+                bandit=request.app.state.bandit,
+                context=context,
+                publish=hub_publisher(
+                    request.app.state.hub, request.app.state.controller_history
+                ),
+            )
+        else:
+            state.gym = Gym(
+                seed=seed, store=request.app.state.store, hub=request.app.state.hub
+            )
         context.started_at = time.time()
         context.is_live = True
 
-    request.app.state.controller.perform = gym_fire(request.app, state)
+    if state.mode == "gym":
+        request.app.state.controller.perform = gym_fire(request.app, state)
     state.task = asyncio.create_task(_run_gym(request.app, state))
-    logger.info("gym started: seed=%s speed=%s", seed, speed)
+    logger.info("gym started: mode=%s seed=%s speed=%s", state.mode, seed, speed)
     return state.status()
 
 
 @gym_router.get("")
 async def gym_status(request: Request) -> dict:
     return request.app.state.gym.status()
+
+
+@gym_router.get("/scenario")
+async def scenario_catalogue() -> dict:
+    """The complete prepared run sheet, including each expected visible outcome."""
+    return catalogue()
 
 
 @gym_router.patch("/speed")
@@ -203,14 +262,19 @@ async def stop_gym(request: Request) -> dict:
     return {**state.status(), "status": "stopped"}
 
 
-def _reset_shared_state(app) -> None:
+def _reset_shared_state(app, *, bandit_seed: int | None = None) -> None:
     """Rebuild everything the gym touches, the same way `create_app` builds it fresh."""
     settings = app.state.settings
     app.state.controller_history.reset()
     hub_publisher(app.state.hub, app.state.controller_history)(
         "controller.reset", {"type": "reset"}
     )
-    build_stack(app, settings, perform=live_fire(app) if settings.controller_enabled else None)
+    build_stack(
+        app,
+        settings,
+        perform=live_fire(app) if settings.controller_enabled else None,
+        bandit_seed=bandit_seed,
+    )
 
 
 @gym_router.post("/speedrun")

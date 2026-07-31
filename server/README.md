@@ -95,14 +95,27 @@ states = twelve posteriors, Thompson sampling, stdlib only.
 | `reward.py` | Scores a closed window against a matched control, not a raw level |
 | `controller.py` | The loop, the safety rails, and the human in the loop |
 | `gym.py` | A reactive persona simulator with forkable twin worlds, and the headless harness |
+| `scenario.py` | A seeded ranked session with readable chat, for the screen |
 
 Nothing is persisted. Chat is processed in memory and only aggregate counts reach the policy.
 
 The gym is the development environment: it writes `EventEnvelope`s into the same store real
 webhooks write into, so the bandit never sees anything it would not see live.
 
+`scenario.py` is the same idea with a story on top: a seeded ranked session whose chat is
+readable, whose phases (queue, drop, loot, fight, endgame) have sampled durations, and whose
+messages arrive off an exponential clock rather than a tick. Timing is emergent — the room is
+classified by `EngagementMonitor` from the messages alone, and an intervention happens when the
+cooldown has passed and that room looks worth spending attention on, so the gaps run from the
+cooldown floor to several minutes. Outcomes are measured by `RewardBook` against matched quiet
+windows, never written down: the only thing the module knows that the policy does not is a
+table of hidden response sizes, which `/dev/gym/scenario` publishes on purpose. Only the
+controller context and open-poll telemetry stay on the five-virtual-second measurement grid.
+
 ```bash
 curl -X POST 'http://localhost:8000/dev/gym?speed=10&seed=1'          # live, into /stream
+curl -X POST 'http://localhost:8000/dev/gym?mode=scenario&speed=5'    # the seeded story
+curl 'http://localhost:8000/dev/gym/scenario'                         # the world's ground truth
 curl -X POST 'http://localhost:8000/dev/gym/speedrun?decisions=2000'  # headless, flat out
 curl -X POST 'http://localhost:8000/dev/gym/race?policies=gambit,timer'
 uv run python -m easy_kick.eval.run_eval --worlds 12    # writes data/eval_results.json
@@ -133,6 +146,8 @@ the loop, so leave it off when running the gym.
 | POST | `/dev/replay?speed=&loop=` | Start dataset replay (simulator only) |
 | DELETE | `/dev/replay` | Stop the replay (simulator only) |
 | GET/POST/DELETE | `/dev/gym?speed=&seed=` | The reactive gym, driving the controller on virtual time (simulator only) |
+| GET | `/dev/gym/scenario` | The story world: its match arc and the response table the policy never sees |
+| POST | `/dev/gym?mode=scenario&speed=` | Play the seeded ranked session through the gym controls |
 | POST | `/dev/gym/speedrun?decisions=&policy=&truth=` | Headless run, flat out (simulator only) |
 | POST | `/dev/gym/race?seed=&policies=` | One world per policy on the same seed (simulator only) |
 | GET | `/controller/policy` | Learned table, rails, and the generated insight sentences |

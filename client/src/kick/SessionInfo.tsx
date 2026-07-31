@@ -107,7 +107,9 @@ export default function SessionInfo({
             </span>
             <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
               <span className="size-1.5 rounded-full" style={{ background: ACTIVE_VIEWERS_COLOR }} />
-              Active Viewers
+              {/* `unique_chatters`. "Talking" everywhere, so this panel and the Insights
+                  chart are naming the same number the same way. */}
+              Talking
               <span className="tnum text-white">
                 {context ? context.unique_chatters : '-'}
               </span>

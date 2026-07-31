@@ -5,7 +5,7 @@
 // has one line per decision and a session takes hundreds, so the default view has to be
 // scannable by someone mid-stream, and the depth has to be one click away rather than
 // spread across every row at once.
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { ChevronRight, Radar } from 'lucide-react';
 import type { GambitState } from '../useGambit';
 import {
@@ -33,8 +33,10 @@ const TABS: [Tab, string][] = [['actions', 'Actions'], ['tactics', 'Policy map']
  * header still says everything the group would: how many, what kind, and what it came to.
  * Summarising it is fine; hiding it is not.
  */
-const GROUPS: { verdict: VerdictLabel; blurb: string }[] = [
-  { verdict: 'Worked', blurb: 'do more of these' },
+const GROUPS: { verdict: VerdictLabel; blurb: string; start?: boolean }[] = [
+  // One group opens on arrival, because four collapsed headers over an empty half-page is
+  // a page that looks like it failed to load. It is the one you came to read.
+  { verdict: 'Worked', blurb: 'do more of these', start: true },
   { verdict: 'Neutral', blurb: 'chat did not move' },
   { verdict: 'Backfired', blurb: 'chat got quieter after — avoid these' },
   { verdict: "Can't tell", blurb: 'no verdict is possible for these' },
@@ -48,12 +50,13 @@ const MIN_TRIES = 2;
 const isUnsent = (r: Row) => r.outcome === 'dismissed' || r.outcome === 'send_failed';
 
 /** One ledger row, and its detail when the streamer opens it. */
-function Entry({ r, first, showState, history, bandit, open, onToggle }: {
+function Entry({ r, first, showState, history, bandit, chat, open, onToggle }: {
   r: Row;
   first: boolean;
   showState: boolean;
   history: History;
   bandit: GambitState['bandit'];
+  chat: GambitState['chat'];
   open: boolean;
   onToggle: () => void;
 }) {
@@ -62,23 +65,27 @@ function Entry({ r, first, showState, history, bandit, open, onToggle }: {
     : null;
 
   return (
-    <div style={{ borderTop: first ? undefined : '1px solid var(--border)' }}>
+    // `data-row` so a click on the chart's pin can find this row and scroll to it.
+    <div data-row={r.action_id}
+      style={{ borderTop: first ? undefined : '1px solid var(--border)' }}>
       <button onClick={onToggle}
-        className="flex w-full items-center gap-3 bg-[var(--bg-surface)] px-3 py-2.5 text-left transition-colors hover:bg-[var(--bg-elevated)]">
-        <ChevronRight size={11} className="shrink-0 text-[var(--text-muted)]"
+        className="flex w-full items-center gap-3 bg-[var(--bg-surface)] px-3 py-3 text-left transition-colors hover:bg-[var(--bg-elevated)]">
+        <ChevronRight size={13} className="shrink-0 text-[var(--text-muted)]"
           style={{ transform: open ? 'rotate(90deg)' : undefined, transition: 'transform .15s' }} />
         {showState && (
-          <span className="w-12 shrink-0 text-[9px] font-bold tracking-widest text-[var(--text-muted)]">
+          <span className="w-14 shrink-0 text-label font-bold tracking-[0.12em] text-[var(--text-muted)]">
             {STATE_LABEL[r.state]}
           </span>
         )}
-        <span className="w-24 shrink-0 truncate text-[11px] text-[var(--text-secondary)]">
+        <span className="w-24 shrink-0 truncate text-body text-[var(--text-secondary)]">
           {ARM_LABEL[r.arm]}
         </span>
         {/* Spans, not divs and paragraphs: the row is a button, and a button may only
             contain phrasing content. */}
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] text-[var(--text-primary)]">
+          {/* The biggest text in the row, on purpose: it is the line that actually went to
+              chat, and the one a demo reads out loud. */}
+          <span className="block truncate text-lead text-[var(--text-primary)]">
             {r.action?.body ? `“${r.action.body}”` : (
               <span className="italic text-[var(--text-muted)]">{r.outcome}</span>
             )}
@@ -86,7 +93,7 @@ function Entry({ r, first, showState, history, bandit, open, onToggle }: {
           {/* Why, not just that: a `Can't tell` with no reason reads as a shrug, and the
               reason is the part that survives questioning. */}
           {whyUnattributable(r) && (
-            <span className="block truncate text-[10px] text-[var(--warn)]">
+            <span className="block truncate text-label text-[var(--warn)]">
               {whyUnattributable(r)}
             </span>
           )}
@@ -94,30 +101,30 @@ function Entry({ r, first, showState, history, bandit, open, onToggle }: {
         {/* A poll's own outcome. Votes are the engagement signal for `chat_poll` — a lift
             number alone hides whether anyone answered. */}
         {Object.values(r.votes).some((n) => n > 0) && (
-          <span className="tnum shrink-0 rounded-sm bg-[var(--bg-elevated)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)]">
+          <span className="tnum shrink-0 rounded-sm bg-[var(--bg-elevated)] px-2 py-0.5 text-label text-[var(--text-secondary)]">
             {Object.entries(r.votes).map(([k, n]) => `${k}:${n}`).join(' · ')}
           </span>
         )}
         {/* Points are the comparable unit; people are the one the streamer feels. Both,
             because they answer different questions. A window that never fired gets neither
             — printing +0.0 pts against it invents a measurement that was never taken. */}
-        <span className="w-[104px] shrink-0 text-right">
+        <span className="w-[112px] shrink-0 text-right">
           {isUnsent(r) ? (
-            <span className="text-[11px] text-[var(--text-muted)]">not measured</span>
+            <span className="text-body text-[var(--text-muted)]">not measured</span>
           ) : (
             <>
-              <span className="tnum block text-[15px] font-bold"
+              <span className="tnum block text-stat font-bold leading-tight"
                 style={{ color: VERDICT_COLOR[labelFor(r)] }}>
                 {points(r.engagement_delta)}
               </span>
               {crowd && (
-                <span className="tnum block text-[10px] text-[var(--text-muted)]">{crowd}</span>
+                <span className="tnum block text-label text-[var(--text-muted)]">{crowd}</span>
               )}
             </>
           )}
         </span>
       </button>
-      {open && <ResultDetail r={r} h={history} bandit={bandit} />}
+      {open && <ResultDetail r={r} h={history} bandit={bandit} chat={chat} />}
     </div>
   );
 }
@@ -137,11 +144,15 @@ function reasonBreakdown(rows: Row[]): string {
     else if (why.includes('no quiet') || why.includes('nothing to')) buckets.control++;
     else buckets.other++;
   }
-  return [
+  const hit = ([
     [buckets.overlap, 'fired too soon after another action'],
     [buckets.control, 'had no comparable quiet window yet'],
     [buckets.other, 'unattributable for another reason'],
-  ].filter(([n]) => (n as number) > 0).map(([n, label]) => `${n} ${label}`).join(' · ');
+  ] as [number, string][]).filter(([n]) => n > 0);
+  // The group header already prints the count. Repeating it — `CAN'T TELL 6 — 6 had no
+  // comparable quiet window` — makes a reader check whether the two numbers are the same
+  // number, which they always are when there is only one reason.
+  return hit.length === 1 ? hit[0][1] : hit.map(([n, label]) => `${n} ${label}`).join(' · ');
 }
 
 /** A collapsible ledger section, headed by a line that reads the same collapsed or open. */
@@ -160,17 +171,19 @@ function Group({ dot, title, color, count, note, trailing, open, onToggle, child
   return (
     <section>
       <button onClick={onToggle}
-        className="mb-1.5 flex w-full items-baseline gap-2 rounded-sm px-1 py-1 text-left transition-colors hover:bg-[var(--bg-elevated)]">
-        <ChevronRight size={12} className="shrink-0 self-center text-[var(--text-muted)]"
+        className="mb-1.5 flex w-full items-baseline gap-2 rounded-sm px-1 py-1.5 text-left transition-colors hover:bg-[var(--bg-elevated)]">
+        <ChevronRight size={14} className="shrink-0 self-center text-[var(--text-muted)]"
           style={{ transform: open ? 'rotate(90deg)' : undefined, transition: 'transform .15s' }} />
         {dot}
-        <span className="shrink-0 text-[11px] font-bold tracking-[0.2em]" style={{ color }}>
+        <span className="shrink-0 text-body font-bold tracking-[0.18em]" style={{ color }}>
           {title}
         </span>
-        <span className="tnum shrink-0 text-[11px] text-[var(--text-muted)]">{count}</span>
-        <span className="truncate text-[11px] text-[var(--text-muted)]">— {note}</span>
+        <span className="tnum shrink-0 text-body font-semibold text-[var(--text-secondary)]">
+          {count}
+        </span>
+        <span className="truncate text-body text-[var(--text-muted)]">— {note}</span>
         {trailing && (
-          <span className="tnum ml-auto shrink-0 text-[12px] font-bold" style={{ color }}>
+          <span className="tnum ml-auto shrink-0 text-lead font-bold" style={{ color }}>
             {trailing}
           </span>
         )}
@@ -215,27 +228,27 @@ function Empty({ icon, kicker, title, blurb, steps }: {
 }) {
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto py-6">
-      <div className="w-full max-w-[520px] rounded-sm border border-dashed border-[var(--border)] bg-[var(--bg-elevated)] p-6 text-center">
-        <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-[var(--bg-surface)] text-[var(--kick-green)]">
+      <div className="w-full max-w-[560px] rounded-sm border border-dashed border-[var(--border)] bg-[var(--bg-elevated)] p-6 text-center">
+        <div className="mx-auto flex size-11 items-center justify-center rounded-full bg-[var(--bg-surface)] text-[var(--kick-green)]">
           {icon}
         </div>
-        <div className="mt-3 text-[10px] font-bold tracking-[0.2em] text-[var(--text-muted)]">
+        <div className="mt-3 text-label font-bold tracking-[0.2em] text-[var(--text-muted)]">
           {kicker}
         </div>
-        <h3 className="mt-1 text-[16px] font-semibold text-[var(--text-primary)]">{title}</h3>
-        <p className="mx-auto mt-1.5 max-w-[420px] text-[12px] leading-relaxed text-[var(--text-secondary)]">
+        <h3 className="mt-1 text-stat font-semibold text-[var(--text-primary)]">{title}</h3>
+        <p className="mx-auto mt-2 max-w-[440px] text-body leading-relaxed text-[var(--text-secondary)]">
           {blurb}
         </p>
 
         <ol className="mt-5 space-y-2 text-left">
           {steps.map(([step, why], i) => (
-            <li key={step} className="flex gap-3 rounded-sm bg-[var(--bg-surface)] px-3 py-2">
-              <span className="tnum mt-px shrink-0 text-[11px] font-bold text-[var(--kick-green)]">
+            <li key={step} className="flex gap-3 rounded-sm bg-[var(--bg-surface)] px-3 py-2.5">
+              <span className="tnum mt-px shrink-0 text-body font-bold text-[var(--kick-green)]">
                 {i + 1}
               </span>
               <span className="min-w-0">
-                <span className="text-[12px] font-medium text-[var(--text-primary)]">{step}</span>
-                <span className="block text-[11px] leading-snug text-[var(--text-muted)]">{why}</span>
+                <span className="text-body font-medium text-[var(--text-primary)]">{step}</span>
+                <span className="block text-body leading-snug text-[var(--text-muted)]">{why}</span>
               </span>
             </li>
           ))}
@@ -269,23 +282,23 @@ function Tile({ k, label, set, all, active, onSelect }: {
 
   return (
     <button onClick={() => onSelect(k)}
-      className="flex-1 rounded-sm border px-3 py-2 text-left transition-colors"
+      className="min-w-0 flex-1 rounded-sm border px-3 py-2.5 text-left transition-colors"
       style={{
         borderColor: active ? 'var(--kick-green)' : 'var(--border)',
         background: active ? 'var(--bg-elevated)' : 'transparent',
       }}>
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-[9px] font-bold tracking-[0.2em] text-[var(--text-muted)]">
+        <span className="text-label font-bold tracking-[0.18em] text-[var(--text-muted)]">
           {label}
         </span>
-        <span className="tnum shrink-0 text-[10px] text-[var(--text-muted)]">
+        <span className="tnum shrink-0 text-label text-[var(--text-muted)]">
           {f.filter((r) => labelFor(r) === 'Worked').length}/{f.length} worked
         </span>
       </div>
-      <div className="tnum text-lg font-bold leading-tight" style={{ color: tint }}>
+      <div className="tnum mt-0.5 text-big font-bold leading-tight" style={{ color: tint }}>
         {points(total)}
       </div>
-      <div className="truncate text-[10px] text-[var(--text-muted)]">
+      <div className="truncate text-body text-[var(--text-muted)]">
         {k === 'all' ? 'every state, summed' : best ? (
           <>
             best: <span className="text-[var(--text-primary)]">{ARM_LABEL[best.arm]}</span>{' '}
@@ -305,6 +318,30 @@ export default function Review({ s }: { s: GambitState }) {
   const isOpen = (k: string, dflt: boolean) => open[k] ?? dflt;
   const toggle = (k: string, dflt: boolean) =>
     setOpen((o) => ({ ...o, [k]: !(o[k] ?? dflt) }));
+
+  /** Which collapsible section a row lives under. Controls and never-sents get their own
+   *  piles rather than a verdict, so this cannot just be `labelFor`. */
+  const sectionOf = (r: Row): string =>
+    isControl(r) ? 'control' : isUnsent(r) ? 'unsent' : labelFor(r);
+
+  // Clicking a pin on the chart opens that window's row down here. Three things have to be
+  // true for it to actually be visible — the right tab, an unfiltered list, and its section
+  // open — and quietly doing two of the three is worse than doing none.
+  const select = (hit: { action_id: string }) => {
+    const row = s.results.find((r) => r.action_id === hit.action_id);
+    if (!row) return;
+    setTab('actions');
+    setFilter('all');
+    setOpen((o) => ({ ...o, [sectionOf(row)]: true }));
+    setExpanded(row.action_id);
+  };
+
+  // Scroll it into view once the section it is in has actually rendered.
+  useEffect(() => {
+    if (!expanded) return;
+    document.querySelector(`[data-row="${CSS.escape(expanded)}"]`)
+      ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [expanded]);
 
   // The whole-session series a row's detail draws its window against.
   const history: History = {
@@ -328,14 +365,14 @@ export default function Review({ s }: { s: GambitState }) {
     // renders correctly both as a full page and inside a panel.
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-2">
-        <span className="tnum text-3xl font-bold leading-none text-[var(--kick-green)]">
+        <span className="tnum text-hero font-bold leading-none text-[var(--kick-green)]">
           {points(totalLift)}
         </span>
-        <div>
-          <div className="text-[13px] font-medium text-[var(--text-primary)]">
+        <div className="min-w-0">
+          <div className="text-lead font-medium text-[var(--text-primary)]">
             more of the audience talking
           </div>
-          <div className="text-[10px] text-[var(--text-muted)]">
+          <div className="text-body text-[var(--text-muted)]">
             {fired.length} interventions · summed matched-control lift, in participation points
             {s.context?.viewer_count ? ` · ${s.context.viewer_count} viewers` : ''}
           </div>
@@ -343,7 +380,7 @@ export default function Review({ s }: { s: GambitState }) {
         <div className="ml-auto flex gap-0.5 rounded-sm border border-[var(--border)] p-0.5">
           {TABS.map(([k, label]) => (
             <button key={k} onClick={() => setTab(k)}
-              className={`rounded-md px-3 py-1.5 text-[12px] font-semibold ${
+              className={`rounded-md px-3.5 py-1.5 text-body font-semibold ${
                 tab === k ? 'bg-[var(--bg-elevated)] text-[var(--text-primary)]' : 'text-[var(--text-muted)]'
               }`}>
               {label}
@@ -354,14 +391,24 @@ export default function Review({ s }: { s: GambitState }) {
 
       <div className="mt-4 rounded-sm border border-[var(--border)] px-3 py-2">
         <InsightsGraph
+          // Two lines, each on its own scale.
+          //
+          // `msgs_per_min` used to be a third, and it was the same curve as `unique_chatters`
+          // drawn twice — more people talking is more messages. Participation is the metric
+          // the whole system optimises, so that is the one that stays.
+          //
+          // Own scales because at 30 chatters in an audience of 650, sharing a scale with
+          // the viewer count pinned the primary metric flat along the bottom of the plot.
+          // Viewers is a dim backdrop, and its flatness is the point — participation moved,
+          // the room did not.
           series={[
-            { data: s.viewerHistory, color: '#6aa9ff', label: 'Viewers', scaleGroup: 'viewers' },
-            { data: s.activeViewersHistory, color: 'var(--kick-green)', label: 'Active Viewers', scaleGroup: 'viewers' },
-            { data: s.actionsHistory, color: 'var(--warn)', label: 'Actions' },
+            { data: s.viewerHistory, color: '#6aa9ff', label: 'Viewers', dim: true },
+            { data: s.activeViewersHistory, color: 'var(--kick-green)', label: 'Talking' },
           ]}
           interventions={interventions}
           elapsedS={s.historyElapsedS}
           viewers={s.viewerHistory}
+          onSelect={select}
         />
       </div>
 
@@ -394,13 +441,17 @@ export default function Review({ s }: { s: GambitState }) {
           </div>
 
           <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-            {s.results.length === 0 && (
-              <p className="text-[12px] text-[var(--text-muted)]">
-                No closed windows yet. Every decision — including choosing to stay quiet —
-                opens a 60s window and lands here when it closes.
+            {/* Not "nothing has happened" — something has, the filter is just hiding it. */}
+            {rows.length === 0 && (
+              <p className="text-body text-[var(--text-muted)]">
+                Nothing has closed in a {filter} yet. Pick another state, or{' '}
+                <button onClick={() => setFilter('all')}
+                  className="text-[var(--kick-green)] hover:underline">
+                  show every state
+                </button>.
               </p>
             )}
-            {GROUPS.map(({ verdict, blurb }) => {
+            {GROUPS.map(({ verdict, blurb, start = false }) => {
               const group = rows
                 .filter((r) => !isControl(r) && !isUnsent(r) && labelFor(r) === verdict)
                 .sort((a, b) => b.engagement_delta - a.engagement_delta);
@@ -419,13 +470,16 @@ export default function Review({ s }: { s: GambitState }) {
                   // number nobody should be adding up.
                   trailing={verdict === 'Worked' || verdict === 'Backfired'
                     ? points(total) : undefined}
-                  open={isOpen(verdict, false)}
-                  onToggle={() => toggle(verdict, false)}
+                  open={isOpen(verdict, start)}
+                  onToggle={() => toggle(verdict, start)}
                 >
-                  <div className="overflow-hidden rounded-sm border border-[var(--border)]">
+                  {/* The verdict as a left edge. Collapsed or open, from the back of a
+                      room, the ledger reads as bands of colour before it reads as text. */}
+                  <div className="overflow-hidden rounded-sm border border-[var(--border)]"
+                    style={{ borderLeft: `3px solid ${VERDICT_COLOR[verdict]}` }}>
                     {group.map((r, i) => (
                       <Entry key={r.action_id + i} r={r} first={!i} showState={filter === 'all'}
-                        history={history} bandit={s.bandit}
+                        history={history} bandit={s.bandit} chat={s.chat}
                         open={expanded === r.action_id}
                         onToggle={() => setExpanded(expanded === r.action_id ? null : r.action_id)} />
                     ))}
@@ -457,7 +511,7 @@ export default function Review({ s }: { s: GambitState }) {
                   <div className="overflow-hidden rounded-sm border border-dashed border-[var(--border)]">
                     {unsent.map((r, i) => (
                       <Entry key={r.action_id + i} r={r} first={!i} showState={filter === 'all'}
-                        history={history} bandit={s.bandit}
+                        history={history} bandit={s.bandit} chat={s.chat}
                         open={expanded === r.action_id}
                         onToggle={() => setExpanded(expanded === r.action_id ? null : r.action_id)} />
                     ))}
@@ -484,21 +538,21 @@ export default function Review({ s }: { s: GambitState }) {
                   <div className="overflow-hidden rounded-sm border border-dashed border-[var(--border)]">
                     {ctrl.slice(0, 12).map((r, i) => (
                       <div key={r.action_id + i}
-                        className="flex items-center gap-3 bg-[var(--bg-surface)] px-3 py-2 opacity-70"
+                        className="flex items-center gap-3 bg-[var(--bg-surface)] px-3 py-2.5 opacity-70"
                         style={{ borderTop: i ? '1px solid var(--border)' : undefined }}>
-                        <span className="w-14 shrink-0 text-[9px] font-bold tracking-widest text-[var(--text-muted)]">
+                        <span className="w-14 shrink-0 text-label font-bold tracking-[0.12em] text-[var(--text-muted)]">
                           {STATE_LABEL[r.state]}
                         </span>
-                        <p className="min-w-0 flex-1 truncate text-[12px] italic text-[var(--text-muted)]">
+                        <p className="min-w-0 flex-1 truncate text-body italic text-[var(--text-muted)]">
                           chose not to intervene
                         </p>
-                        <span className="tnum w-[86px] shrink-0 text-right text-[13px] text-[var(--text-secondary)]">
+                        <span className="tnum w-[86px] shrink-0 text-right text-lead text-[var(--text-secondary)]">
                           {points(r.engagement_delta)}
                         </span>
                       </div>
                     ))}
                     {ctrl.length > 12 && (
-                      <p className="bg-[var(--bg-surface)] px-3 py-1.5 text-[10px] text-[var(--text-muted)]">
+                      <p className="bg-[var(--bg-surface)] px-3 py-2 text-body text-[var(--text-muted)]">
                         + {ctrl.length - 12} more quiet windows
                       </p>
                     )}

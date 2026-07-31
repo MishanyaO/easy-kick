@@ -19,9 +19,20 @@ Needs Node 18+, Python 3.11+, and [uv](https://docs.astral.sh/uv/).
 npm run dev:simulator
 ```
 
-Open [http://localhost:5173](http://localhost:5173) and hit **Start gym**. A simulated
-audience of 120 personas reacts to what the bot does, and the controller runs the real loop
-against it — nothing about the decisions or the measurement is faked.
+Open [http://localhost:5173](http://localhost:5173), pick **Training**, and hit **Start**. A
+simulated audience of 120 personas reacts to what the bot does, and the controller runs the
+real loop against it — nothing about the decisions or the measurement is faked. (Training is
+the `gym` mode on the wire; the UI calls it what it is for.)
+
+For a presentation, select **Story** instead. It plays two virtual hours of one ranked session
+with chat that reads like a room watching a match — around forty interventions, all of them
+decided by Thompson sampling on the state the room is actually in, none of them on a timer.
+Nothing about the show is scripted: the arc, the dialogue, who answers a poll and how well it
+lands are all drawn from the seed, so the same seed replays a run exactly and a new seed is a
+genuinely different session. What the world knows and the policy does not is one table of
+hidden response sizes, published at `/dev/gym/scenario` so you can check the bandit's homework.
+Its measured outcomes update a seeded, run-scoped policy table so the Tactics view visibly
+learns during the story; stopping the story discards that table.
 
 The app has two surfaces. **Live** is the panel a streamer parks over their OBS preview:
 it stays quiet until chat needs something, then offers one action to approve. **Review** is

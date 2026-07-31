@@ -9,7 +9,7 @@ import { useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import {
   ARM_LABEL, ORIGIN_LABEL, VERDICT_COLOR, clock, labelFor, points, whyThisArm,
-  whyUnattributable, type ActionFrame, type BanditFrame, type ResultFrame,
+  whyUnattributable, type ActionFrame, type BanditFrame, type ChatFrame, type ResultFrame,
 } from '../types';
 import { BOT_NAME } from '../useGambit';
 
@@ -20,6 +20,14 @@ export type History = { active: number[]; viewers: number[]; elapsed: number[] }
 
 const WINDOW_S = 60; // the measurement window every decision opens
 const LEAD_S = 120; // how much run-up to draw before it, for context
+
+/** How much of the room to show around the bot's line. Enough before it to see what chat
+ *  was already on about, and enough after to see whether anyone picked it up. */
+const SAY_BEFORE = 3;
+const SAY_AFTER = 7;
+/** How close the nearest kept message has to be for the transcript to be about this action
+ *  at all — in a lull the room can be quiet for a while, but not for minutes. */
+const NEAR_S = 90;
 
 const CW = 260;
 const CH = 40;
@@ -39,7 +47,7 @@ const mean = (xs: number[]) => (xs.length ? xs.reduce((a, n) => a + n, 0) / xs.l
 function Tile({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="min-w-0 rounded-sm bg-[var(--bg-surface)] px-2.5 py-2">
-      <div className="text-[9px] font-bold tracking-[0.18em] text-[var(--text-muted)]">{label}</div>
+      <div className="text-label font-bold tracking-[0.18em] text-[var(--text-muted)]">{label}</div>
       <div className="mt-1.5">{children}</div>
     </div>
   );
@@ -86,7 +94,7 @@ function WindowChart({ h, closeIdx, tint }: { h: History; closeIdx: number; tint
         <path d={d} fill="none" stroke="var(--kick-green)" strokeWidth="1.5"
           vectorEffect="non-scaling-stroke" />
       </svg>
-      <div className="mt-1 flex items-baseline gap-1.5 text-[11px]"
+      <div className="mt-1 flex items-baseline gap-1.5 text-label"
         title="Raw before and during, uncorrected — the shaded band is the 60s window">
         <span className="tnum text-[var(--text-secondary)]">{before.toFixed(1)}</span>
         <span className="text-[var(--text-muted)]">→</span>
@@ -111,7 +119,7 @@ function Votes({ votes, options }: { votes: Record<string, number>; options?: st
         const won = n === top;
         return (
           <div key={k} className="flex items-center gap-2">
-            <span className="w-20 shrink-0 truncate text-[11px]"
+            <span className="w-20 shrink-0 truncate text-label"
               style={{ color: won ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
               {k}
             </span>
@@ -120,13 +128,13 @@ function Votes({ votes, options }: { votes: Record<string, number>; options?: st
                 style={{ width: `${(n / total) * 100}%`,
                   background: won ? 'var(--kick-green)' : 'var(--text-muted)' }} />
             </div>
-            <span className="tnum w-9 shrink-0 text-right text-[11px] text-[var(--text-secondary)]">
+            <span className="tnum w-9 shrink-0 text-right text-label text-[var(--text-secondary)]">
               {Math.round((n / total) * 100)}%
             </span>
           </div>
         );
       })}
-      <p className="tnum text-[10px] text-[var(--text-muted)]"
+      <p className="tnum text-label text-[var(--text-muted)]"
         title="One vote each, first answer counts — deduped by viewer">
         {total} voted
       </p>
@@ -134,10 +142,54 @@ function Votes({ votes, options }: { votes: Record<string, number>; options?: st
   );
 }
 
-export default function ResultDetail({ r, h, bandit }: {
+/**
+ * The room around the bot's line.
+ *
+ * The lift says whether chat moved. It cannot say what chat was *on about*, and that is the
+ * first thing anyone asks of a result that surprises them — the number is the finding, this
+ * is whether the finding is believable. Our own line is marked, so you can see it land.
+ */
+function Transcript({ chat, at }: { chat: ChatFrame[]; at: string }) {
+  const t = Date.parse(at);
+  if (Number.isNaN(t)) return null;
+  // Chat arrives in order, so the first message at or after the action is the split point.
+  const i = chat.findIndex((m) => Date.parse(m.ts) >= t);
+  if (i < 0) return null;
+  // The backlog only reaches so far back. Past its edge this would happily print the oldest
+  // messages it has, from some other minute entirely, under a heading that says they are
+  // the room around this action — which is worse than showing nothing.
+  if (Math.abs(Date.parse(chat[i].ts) - t) > NEAR_S * 1000) return null;
+  const around = chat.slice(Math.max(0, i - SAY_BEFORE), i + SAY_AFTER + 1);
+  if (!around.length) return null;
+
+  return (
+    <div className="space-y-1">
+      {around.map((m) => {
+        const ours = m.username === BOT_NAME;
+        return (
+          <p key={m.id} className="flex gap-2 text-body leading-snug">
+            <span className="w-28 shrink-0 truncate font-semibold"
+              style={{ color: ours ? 'var(--kick-green)' : 'var(--text-secondary)' }}>
+              {m.username}
+            </span>
+            <span className="min-w-0 flex-1"
+              style={{ color: ours ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
+              {/* Emote tokens are for the chat pane's renderer; here they are noise. */}
+              {m.text.replace(/\[emote:\d+:([^\]]+)\]/g, '$1')}
+            </span>
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+export default function ResultDetail({ r, h, bandit, chat }: {
   r: LedgerRow;
   h: History;
   bandit: BanditFrame | null;
+  /** Every message this tab has seen. Empty is fine — the transcript just does not render. */
+  chat: ChatFrame[];
 }) {
   const [nerd, setNerd] = useState(false);
   const tint = VERDICT_COLOR[labelFor(r)];
@@ -152,11 +204,11 @@ export default function ResultDetail({ r, h, bandit }: {
       {/* The line in full — the row above it is truncated, which is the main reason to open
           one at all. No lift figure here: the row is still on screen, showing it. */}
       {r.action?.body ? (
-        <p className="text-[13px] leading-snug text-[var(--text-primary)]">“{r.action.body}”</p>
+        <p className="text-body leading-snug text-[var(--text-primary)]">“{r.action.body}”</p>
       ) : (
-        <p className="text-[12px] italic text-[var(--text-muted)]">no line recorded</p>
+        <p className="text-body italic text-[var(--text-muted)]">no line recorded</p>
       )}
-      <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+      <p className="mt-1 text-label text-[var(--text-muted)]">
         {[
           BOT_NAME,
           at,
@@ -179,7 +231,15 @@ export default function ResultDetail({ r, h, bandit }: {
         </div>
       )}
 
-      <div className="mt-2 flex items-baseline gap-2 text-[10px] text-[var(--text-muted)]">
+      {r.action?.ts && chat.length > 0 && (
+        <div className="mt-2">
+          <Tile label="WHAT CHAT WAS SAYING">
+            <Transcript chat={chat} at={r.action.ts} />
+          </Tile>
+        </div>
+      )}
+
+      <div className="mt-2 flex items-baseline gap-2 text-label text-[var(--text-muted)]">
         {caveat ? (
           <span className="min-w-0 truncate text-[var(--warn)]" title={caveat}>{caveat}</span>
         ) : (
@@ -202,7 +262,7 @@ export default function ResultDetail({ r, h, bandit }: {
       </div>
 
       {nerd && (
-        <dl className="tnum mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1 border-t border-[var(--border)] pt-1.5 text-[10px] sm:grid-cols-4">
+        <dl className="tnum mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1 border-t border-[var(--border)] pt-1.5 text-label sm:grid-cols-4">
           {([
             ['matched lift', points(r.engagement_delta), 'against comparable quiet windows'],
             ['naive lift', points(r.lift_naive), 'before/after only, biased by drift'],

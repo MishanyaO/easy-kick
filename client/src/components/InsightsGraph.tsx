@@ -10,16 +10,26 @@
 // whole session showing where the actions are — the part a scrollbar cannot tell you —
 // which frames the visible slice and jumps the view when clicked.
 //
-// And hovering a marker used to open a tooltip on top of the chart, covering the very thing
-// it described. The readout is a reserved line under the axis now: it changes as you sweep
-// across the markers and never occludes anything.
+// And reading a marker has to happen where the marker is. A tooltip on top of the chart
+// covers the very thing it describes; a readout line under the axis is 40px from where you
+// are looking, which on a projector may as well be another screen. So the card is anchored
+// to the pin and opens into a reserved band *above* the plot: next to what you hovered,
+// over nothing, and the chart never moves because the band is always there.
 import { useEffect, useRef, useState } from 'react';
 import {
   ARM_LABEL, VERDICT_COLOR, clock as fmt, labelFor, peopleShort, points,
   type ActionFrame, type ResultFrame,
 } from '../types';
 
-export type GraphSeries = { data: number[]; color: string; label: string; scaleGroup?: string };
+export type GraphSeries = {
+  data: number[];
+  color: string;
+  label: string;
+  scaleGroup?: string;
+  /** Context rather than subject: drawn thin and faint so it reads as a backdrop the
+   *  other lines move against. */
+  dim?: boolean;
+};
 export type Intervention = { index: number; result: ResultFrame & { action?: ActionFrame } };
 
 /** The chart's own coordinate space. It is stretched to the scrolling content width, so
@@ -29,6 +39,17 @@ const W = 640;
  *  the session grows, instead of the session being compressed into the panel. */
 const PX_PER_SAMPLE = 7;
 const MAP_H = 22;
+/**
+ * The band the hover card opens into.
+ *
+ * Reserved whether or not anything is hovered, because a chart that jumps when the pointer
+ * crosses a pin is unreadable. It must clear the TALLER of the two cards: the scroller
+ * around it is `overflow-y: hidden` (it has to be — `overflow-x: auto` forces it), so a
+ * card even a pixel taller than this is silently cropped along its top edge rather than
+ * overflowing. Measured, not guessed; if a row is ever added to either card, re-measure.
+ */
+const POP_H = 84;
+const POP_W = 380;
 /** How far the minimap's drag handles can zoom in — narrower than this and there's nothing
  *  left to read off the chart. */
 const MAX_ZOOM = 30;
@@ -62,6 +83,10 @@ function nearestIndex(elapsed: number[], target: number): number {
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
+/** A series value as a person would say it. Counts are whole; rates are not. */
+const readout = (v: number | undefined) =>
+  v == null ? '—' : Number.isInteger(v) ? String(v) : v.toFixed(1);
+
 /** Width of a `00:00:00` label, in a unit that tracks the font. */
 const LABEL_CH = '8ch';
 
@@ -79,7 +104,7 @@ function line(data: number[], max: number, h: number, pad: number, x: (i: number
 }
 
 export default function InsightsGraph({
-  series, interventions, elapsedS, viewers, height = 96,
+  series, interventions, elapsedS, viewers, onSelect, height = 112,
 }: {
   series: GraphSeries[];
   interventions: Intervention[];
@@ -87,12 +112,20 @@ export default function InsightsGraph({
   /** Audience size per sample, only so the readout can say a lift in people rather than
    *  points. Optional: without it that figure is simply dropped. */
   viewers?: number[];
+  /** Clicking a pin hands the window back to whoever owns the ledger, which is the only
+   *  thing that can open it. Without this the pins are read-only. */
+  onSelect?: (r: ResultFrame) => void;
   height?: number;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const mapRef = useRef<SVGSVGElement>(null);
+  /** The pin under the pointer, snapped. Null when the pointer is between pins. */
   const [hover, setHover] = useState<number | null>(null);
+  /** The sample under the pointer, snapped to nothing. Between pins this is what the
+   *  readout speaks for — "what were the numbers here" is the question a line chart raises
+   *  everywhere along its length, not only where something happened. */
+  const [at, setAt] = useState<number | null>(null);
   /** Following the live edge. True until the streamer scrolls back, and true again the
    *  moment they scroll to the end — the same rule a chat window uses. */
   const [live, setLive] = useState(true);
@@ -153,6 +186,9 @@ export default function InsightsGraph({
   ) * 1.15);
 
   const shown = interventions.find((iv) => iv.index === hover)?.result ?? null;
+  /** Where the card and the crosshair sit: on the snapped pin when there is one, otherwise
+   *  wherever the pointer is. */
+  const cursor = hover ?? at;
 
   /** Where the hovered window opened: 60 virtual seconds before it closed, in samples.
    *  Null when nothing is hovered, or there is no clock to measure that against. */
@@ -173,17 +209,21 @@ export default function InsightsGraph({
     setLive(true);
   };
 
-  /** Snap the hover to the nearest marker under the pointer — the dashed lines are 1px and
-   *  chasing one with a mouse is a game, not a reading. */
+  /** Track the sample under the pointer, and snap to a marker when one is close enough —
+   *  the dashed lines are 1px and chasing one with a mouse is a game, not a reading. */
   const hoverAt = (clientX: number) => {
     const rect = svgRef.current?.getBoundingClientRect();
-    if (!rect || !interventions.length) return setHover(null);
-    const at = clamp((clientX - rect.left) / rect.width, 0, 1) * (len - 1);
+    if (!rect) return;
+    const raw = clamp((clientX - rect.left) / rect.width, 0, 1) * (len - 1);
+    setAt(Math.round(raw));
+    if (!interventions.length) return setHover(null);
     const near = interventions.reduce((best, iv) =>
-      Math.abs(iv.index - at) < Math.abs(best.index - at) ? iv : best);
+      Math.abs(iv.index - raw) < Math.abs(best.index - raw) ? iv : best);
     // A fixed pixel tolerance, converted to samples — the same feel at any zoom.
-    setHover(Math.abs(near.index - at) <= 8 / (PX_PER_SAMPLE * zoom) ? near.index : null);
+    setHover(Math.abs(near.index - raw) <= 8 / (PX_PER_SAMPLE * zoom) ? near.index : null);
   };
+
+  const clearHover = () => { setHover(null); setAt(null); };
 
   /** Centre the scroller on a point in the minimap. */
   const jumpTo = (clientX: number) => {
@@ -224,17 +264,23 @@ export default function InsightsGraph({
 
   return (
     <div>
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         {series.map((s) => (
-          <span key={s.label} className="flex items-center gap-1.5 text-[10px] text-[var(--text-muted)]">
-            <span className="size-1.5 rounded-full" style={{ background: s.color }} />
+          <span key={s.label} className="flex items-center gap-1.5 text-body text-[var(--text-secondary)]">
+            <span className="size-2 rounded-full" style={{ background: s.color }} />
             {s.label}
           </span>
         ))}
+        {/* The instruction lives out here rather than in the card's band, which scrolls. */}
+        <span className="ml-auto truncate text-label text-[var(--text-muted)]">
+          {interventions.length
+            ? `${interventions.length} actions — hover anywhere to read the numbers, click a pin for the chat`
+            : 'pins appear here as windows close'}
+        </span>
         <button onClick={toLive} disabled={live}
-          className="ml-auto flex items-center gap-1 text-[10px] font-semibold transition-colors"
+          className="flex shrink-0 items-center gap-1 text-label font-semibold transition-colors"
           style={{ color: live ? 'var(--text-muted)' : 'var(--kick-green)' }}>
-          <span className="size-1.5 rounded-full"
+          <span className="size-2 rounded-full"
             style={{ background: live ? 'var(--kick-green)' : 'var(--text-muted)' }} />
           {live ? 'live' : 'jump to live'}
         </button>
@@ -246,41 +292,120 @@ export default function InsightsGraph({
         className="mt-1.5 overflow-x-auto overflow-y-hidden"
         style={{ overscrollBehaviorX: 'contain' }}>
         <div style={{ width: contentPx, minWidth: '100%' }}>
+          {/* The hover card's band. Anchored to the pin's own x and clamped to the chart's
+              ends, so it stays beside what you hovered without ever running off the edge.
+              `pointer-events-none` — it opens directly above the pin, and a card that could
+              take the hover from the pin under it would flicker the moment it appeared. */}
+          <div className="pointer-events-none relative" style={{ height: POP_H }}>
+            {cursor !== null && (
+              <article
+                className="absolute bottom-1 rounded-sm border border-[var(--border)] bg-[var(--bg-base)] px-3 py-2 shadow-[0_8px_24px_rgba(0,0,0,0.55)]"
+                style={{
+                  left: centred(`${(cursor / (len - 1)) * 100}%`, `${POP_W}px`),
+                  width: POP_W,
+                  borderLeft: `3px solid ${shown ? VERDICT_COLOR[labelFor(shown)] : 'var(--text-secondary)'}`,
+                }}
+              >
+                {shown ? (
+                  <>
+                    <div className="flex items-baseline gap-2">
+                      <span className="shrink-0 text-label font-bold tracking-[0.14em]"
+                        style={{ color: VERDICT_COLOR[labelFor(shown)] }}>
+                        {labelFor(shown).toUpperCase()}
+                      </span>
+                      <span className="min-w-0 truncate text-body text-[var(--text-secondary)]">
+                        {ARM_LABEL[shown.arm]}
+                      </span>
+                      <span className="tnum ml-auto shrink-0 text-stat font-bold leading-none"
+                        style={{ color: VERDICT_COLOR[labelFor(shown)] }}>
+                        {points(shown.engagement_delta)}
+                      </span>
+                    </div>
+                    {/* No timestamp: the shaded band below marks the measured 60s against
+                        an axis that is already labelled, so printing the clock here is the
+                        third place on screen saying when. */}
+                    <div className="mt-1 flex items-baseline gap-2">
+                      <span className="min-w-0 flex-1 truncate text-lead text-[var(--text-primary)]">
+                        {shown.action?.body ? `“${shown.action.body}”` : '—'}
+                      </span>
+                      {!shown.contaminated && (
+                        <span className="tnum shrink-0 text-label text-[var(--text-muted)]">
+                          {peopleShort(shown.engagement_delta, viewers?.[cursor])}
+                        </span>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  // Between pins: what the lines actually say here. A chart of counts that
+                  // will not tell you a count makes you estimate one off a pixel height.
+                  <>
+                    <div className="tnum text-label text-[var(--text-muted)]">
+                      {elapsedS?.[cursor] != null ? fmt(elapsedS[cursor]) : 'this moment'}
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                      {series.map((s) => (
+                        <span key={s.label} className="flex items-baseline gap-1.5">
+                          <span className="size-2 shrink-0 self-center rounded-full"
+                            style={{ background: s.color }} />
+                          <span className="text-body text-[var(--text-secondary)]">{s.label}</span>
+                          <span className="tnum text-lead font-bold text-[var(--text-primary)]">
+                            {readout(s.data[cursor])}
+                          </span>
+                        </span>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </article>
+            )}
+          </div>
+
           {/* Pins, above the plot rather than on it. A dashed hairline is easy to miss and
               impossible to aim at; a coloured pin says an action happened here and how it
               went before anyone hovers anything. They live in HTML, not the SVG, because
               the plot is stretched horizontally and would stretch a shape with it. */}
-          <div className="relative h-2.5">
+          <div className="relative h-3">
             {interventions.map(({ index, result: r }) => {
               const on = hover === index;
-              const size = on ? 9 : 5;
+              const size = on ? 11 : 7;
               return (
                 <span key={r.action_id}
-                  onMouseEnter={() => setHover(index)}
-                  onMouseLeave={() => setHover(null)}
-                  className="absolute bottom-0 block cursor-pointer rounded-[1px] transition-[width,height,opacity]"
+                  onMouseEnter={() => { setHover(index); setAt(index); }}
+                  onMouseLeave={clearHover}
+                  onClick={() => onSelect?.(r)}
+                  className="absolute bottom-0 block cursor-pointer rounded-[2px] transition-[width,height,opacity]"
                   style={{
                     left: centred(`${(index / (len - 1)) * 100}%`, `${size}px`),
                     width: size,
                     height: size,
                     background: VERDICT_COLOR[labelFor(r)],
-                    opacity: on ? 1 : 0.8,
+                    opacity: on ? 1 : 0.85,
                   }} />
               );
             })}
           </div>
           <svg ref={svgRef} viewBox={`0 0 ${W} ${height}`} preserveAspectRatio="none"
-            style={{ display: 'block', width: '100%', height }}
             onMouseMove={(e) => hoverAt(e.clientX)}
-            onMouseLeave={() => setHover(null)}
+            onMouseLeave={clearHover}
+            onClick={() => shown && onSelect?.(shown)}
+            style={{ display: 'block', width: '100%', height, cursor: shown ? 'pointer' : 'crosshair' }}
           >
-            {series.map(({ data, color, scaleGroup }, i) => {
+            {series.map(({ data, color, scaleGroup, dim }, i) => {
               const max = scaleGroup ? groupMax(scaleGroup) : (Math.max(...data) * 1.15 || 1);
               return (
                 <path key={i} d={line(data, max, height, 6, x)} fill="none" stroke={color}
-                  strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+                  strokeWidth={dim ? 1 : 1.75} opacity={dim ? 0.45 : 1}
+                  vectorEffect="non-scaling-stroke" />
               );
             })}
+            {/* The crosshair, only between pins — on a pin the marker's own line already
+                goes solid, and two vertical rules at the same x is one too many. A bare
+                line and no dots: `preserveAspectRatio="none"` stretches this box, so a
+                circle drawn here comes out an ellipse. */}
+            {at !== null && hover === null && (
+              <line x1={x(at)} x2={x(at)} y1={0} y2={height} stroke="var(--text-secondary)"
+                strokeWidth="1" opacity={0.55} vectorEffect="non-scaling-stroke" />
+            )}
             {/* The measured stretch, shaded on hover — the 60s the verdict was read off,
                 shown where it happened instead of described somewhere else. */}
             {band !== null && shown && (
@@ -297,7 +422,7 @@ export default function InsightsGraph({
           </svg>
 
           {elapsedS && elapsedS.length >= 2 && (
-            <div className="relative mt-1 h-3 text-[9px] text-[var(--text-muted)]">
+            <div className="tnum relative mt-1 h-5 text-label text-[var(--text-muted)]">
               {ticks.map((t) => (
                 <span key={t} className="absolute whitespace-nowrap"
                   style={{
@@ -309,49 +434,6 @@ export default function InsightsGraph({
             </div>
           )}
         </div>
-      </div>
-
-      {/* The readout. A reserved line, not a popup: it holds its height whether or not
-          anything is hovered, so the chart above never moves and never gets covered. It
-          fills with the verdict's colour when a marker is live under the pointer — a bare
-          line of small grey text 30px away is easy to miss while looking at the chart. */}
-      <div className="mt-1 flex h-[22px] items-center gap-2 overflow-hidden rounded-sm px-2 text-[11px] transition-colors"
-        style={{
-          background: shown ? 'var(--bg-elevated)' : 'transparent',
-          borderLeft: `2px solid ${shown ? VERDICT_COLOR[labelFor(shown)] : 'transparent'}`,
-        }}>
-        {shown ? (
-          <>
-            <span className="shrink-0 font-semibold" style={{ color: VERDICT_COLOR[labelFor(shown)] }}>
-              {labelFor(shown)} · {ARM_LABEL[shown.arm]}
-            </span>
-            {shown.action?.body && (
-              <span className="min-w-0 truncate text-[var(--text-secondary)]">
-                “{shown.action.body}”
-              </span>
-            )}
-            <span className="tnum ml-auto shrink-0 text-[13px] font-bold"
-              style={{ color: VERDICT_COLOR[labelFor(shown)] }}>
-              {points(shown.engagement_delta)}
-            </span>
-            {!shown.contaminated && hover !== null && (
-              <span className="tnum shrink-0 text-[10px] text-[var(--text-muted)]">
-                {peopleShort(shown.engagement_delta, viewers?.[hover])}
-              </span>
-            )}
-            {hover !== null && elapsedS?.[hover] != null && (
-              <span className="tnum shrink-0 text-[10px] text-[var(--text-muted)]">
-                {fmt(elapsedS[hover])}
-              </span>
-            )}
-          </>
-        ) : (
-          <span className="truncate text-[10px] text-[var(--text-muted)]">
-            {interventions.length
-              ? `${interventions.length} actions on this timeline — hover a pin to read one`
-              : 'markers appear here as windows close'}
-          </span>
-        )}
       </div>
 
       {/* The minimap: the whole session at a glance, and the one thing the scrollbar cannot

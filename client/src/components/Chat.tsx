@@ -36,6 +36,10 @@ import { emoteSrc } from '../kick/emotes';
  */
 const MIN_FOR_PCT = 10;
 
+/** Messages the pane paints. Comfortably more than a tall panel can show, so scrollback
+ *  still works, and bounded so a long session does not turn the pane into a DOM tree. */
+const VISIBLE = 250;
+
 function PollBanner({ poll, closesInS, onDismiss }: {
   poll: { question: string; options: string[]; votes: Record<string, number>; voters: number };
   /** Present while the window is still open; absent once it has closed. */
@@ -259,7 +263,11 @@ export default function Chat({
   // re-pinning after the streamer has started scrolling up is exactly the jump we are fixing.
   const following = useRef(true);
 
-  const view = frozen ?? messages;
+  // The tail, not the lot. A two-hour session accumulates a few thousand messages and every
+  // one of them was a rendered row, which is a slower and slower pane for scrollback nobody
+  // uses — a chat window is the last few minutes by definition. The full log stays in state
+  // for the surfaces that do read back through it, like a result's transcript.
+  const view = (frozen ?? messages).slice(-VISIBLE);
 
   // Pinning happens BEFORE paint and without animation, so the newest line simply is at the
   // bottom — a scripted smooth scroll runs after paint, which is visible as a jump on a

@@ -61,7 +61,13 @@ async def _chat_sse(request: Request, backlog: int) -> AsyncIterator[str]:
         chat_backlog = reversed(
             store.query(event_type=EventType.CHAT_MESSAGE_SENT, limit=backlog)
         )
-        controller_backlog = history.snapshot()
+        # A `reset` means "discard the session you are holding". A subscriber that has just
+        # connected is holding none — but it *is* holding the chat backlog we sent one line
+        # above, and replaying the boundary marker threw that away, so every fresh tab
+        # opened onto a running session showed an empty chat pane. Dropping it here is safe
+        # in general: `ControllerHistory.reset()` clears the buffer, so the only reset that
+        # can ever appear in a snapshot is the current session's own first frame.
+        controller_backlog = [f for f in history.snapshot() if f.get("type") != "reset"]
         for ev in chat_backlog:
             yield f"data: {ChatEventOut.from_envelope(ev).model_dump_json()}\n\n"
         for frame in controller_backlog:

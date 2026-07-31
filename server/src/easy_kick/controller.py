@@ -16,12 +16,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from .bandit import MIN_PULLS, Bandit, Decision
+from .bandit import MIN_PULLS, Bandit, Decision, control_floor
 from .context import StreamContext
 from .controller_history import ControllerHistory
 from .engagement import BOT_NAME, EngagementMonitor
 from .hub import EventHub
 from .models import (
+    APPROVAL_ONLY_ARMS,
     BANDIT_ARMS,
     Arm,
     Autonomy,
@@ -31,7 +32,7 @@ from .models import (
     Mode,
     TrialOrigin,
 )
-from .reward import CONTAMINATION_S, Outcome, RewardBook, Window
+from .reward import CONTAMINATION_S, Outcome, RewardBook, Window, window_for
 from .store import EventStore
 
 logger = logging.getLogger("kick.controller")
@@ -121,9 +122,19 @@ class Controller:
         self._warmup_s = warmup_s
 
         self.enabled = True  # kill switch
+        # Moves opened, whoever chose them. Not the bandit's own count, which by design
+        # stands still in `manual` — the sliders decide there and `select` is never called.
+        self.decisions = 0
         self.autonomy = dict(DEFAULT_AUTONOMY)
         self.approvals: Counter[Arm] = Counter()
         self.vetoes: Counter[tuple[ChatState, Arm]] = Counter()
+        # Where the copy comes from. Swappable so a caller with better words than the
+        # templates — an LLM writer, or the prepared story, which has copy written for the
+        # exact beat it is sent in — supplies them without forking the decision loop.
+        self.compose: Callable[[Arm], Card] = compose
+        # Set when the evidence behind these frames is not live traffic. Simulated evidence
+        # stays labelled as such wherever it is shown, however real the measurement was.
+        self.evidence_origin: str | None = None
 
         # Set before the stream starts. In `manual`, `fire_rate` (fires/minute per arm) drives
         # firing directly and the bandit is never consulted or updated. In `auto` (default),
@@ -137,14 +148,21 @@ class Controller:
         self._fires: deque[tuple[float, Arm]] = deque()
         self._seen_category_change: float | None = None
 
-    def tick(self, now: float) -> None:
-        """One cycle. Safe to call at any cadence; nothing here sleeps or awaits."""
+    def tick(self, now: float, *, may_act: bool = True) -> None:
+        """One cycle. Safe to call at any cadence; nothing here sleeps or awaits.
+
+        `may_act` withholds permission to *open* a new move this tick — measurement,
+        closing, expiry and the frames the dashboard reads all still happen. Live nothing
+        withholds it, but a simulated room drives its own pacing off what chat is doing,
+        and a bot that opened a move on every free tick would run on the cooldown like a
+        metronome.
+        """
         self._close_due(now)
         self._expire_pending(now)
         self._reset_changed_regime()
         metrics = self._monitor.measure(now)
         state = self._monitor.classify(metrics)
-        self._publish(
+        self._emit(
             "controller.context",
             self._context.frame(
                 now,
@@ -157,12 +175,13 @@ class Controller:
         # Only once the prompt is actually in chat: a card still waiting for the streamer's
         # approval has asked nobody anything, so anything typed meanwhile is not a ballot.
         if self._window and self._window.fired and self._card and self._card.options:
-            self._publish(
+            self._emit(
                 "controller.poll", self._poll_frame(self._window, self._card, now)
             )
 
         if (
-            not self.enabled
+            not may_act
+            or not self.enabled
             or self._pending
             or self._window
             or self._railed(now)
@@ -186,7 +205,12 @@ class Controller:
         if not eligible or eligible == (Arm.NOTHING,):
             return
         try:
-            decision = self._bandit.select(state, eligible)
+            # Buy more silence while this state has nothing to score against. Without it a
+            # session can spend itself entirely on unattributable windows.
+            decision = self._bandit.select(
+                state, eligible,
+                nothing_floor=control_floor(self._rewards.control_deficit(state)),
+            )
         except Exception:
             # The bandit is a chooser, never a dependency. A degenerate cell must cost one
             # tick, not the loop.
@@ -218,7 +242,7 @@ class Controller:
             return False
         self._pending = None
         self.vetoes[pending.decision.state, pending.decision.arm] += 1
-        self._publish("controller.result", _pending_result(pending, "dismissed"))
+        self._emit("controller.result", _pending_result(pending, "dismissed"))
         return True
 
     def delivery_succeeded(self, action_id: str, now: float) -> bool:
@@ -247,7 +271,7 @@ class Controller:
         if not (pending and not pending.awaiting_approval and pending.id == action_id):
             return False
         self._pending = None
-        self._publish(
+        self._emit(
             "controller.result", _pending_result(pending, "send_failed", reason)
         )
         return True
@@ -274,12 +298,32 @@ class Controller:
             arm
             for arm, mode in self.autonomy.items()
             if mode is Autonomy.ASK
-            and arm is not Arm.PREDICTION  # never promoted: it spends viewers' points
+            and arm not in APPROVAL_ONLY_ARMS
             and self.approvals[arm] >= PROMOTE_AFTER_APPROVALS
             and _arm_mean(self._bandit, arm) > 0.5
         ]
 
+    def adopt_rails(self, other: "Controller") -> None:
+        """Carry the human settings over from the controller this one replaces.
+
+        Rails are the streamer's, not the session's. Everything measured — the store, the
+        posteriors, the open window, the context — has to go when a run is reset, but
+        silently re-arming an arm they switched off, or dropping an Auto approve they
+        switched on, is the reset overwriting a decision that was never ours to make.
+        """
+        self.enabled = other.enabled
+        self.autonomy = dict(other.autonomy)
+        self.mode = other.mode
+        self.fire_rate = dict(other.fire_rate)
+
     # --- internals -----------------------------------------------------------------
+
+    def _emit(self, event_type: str, payload: dict) -> None:
+        """Publish one frame, labelled with where its evidence came from when that is not
+        live traffic."""
+        if self.evidence_origin is not None:
+            payload = {**payload, "evidence_origin": self.evidence_origin}
+        self._publish(event_type, payload)
 
     def _railed(self, now: float) -> bool:
         return (
@@ -333,11 +377,17 @@ class Controller:
     ) -> None:
         arm, state = decision.arm, decision.state
         window_id = uuid.uuid4().hex[:12]
-        autonomy = self.autonomy[arm]
+        self.decisions += 1
+        # Approval-only arms remain human-gated even if an internal caller constructs an
+        # invalid autonomy map. The HTTP surface rejects that state too; this is the final
+        # delivery-boundary guard before viewers' points can be put in play.
+        autonomy = (
+            Autonomy.ASK if arm in APPROVAL_ONLY_ARMS else self.autonomy[arm]
+        )
         # `nothing` has no card and says nothing, but it still opens a window. Otherwise its
         # posterior never updates and the arm can never win — which is the whole reason the
         # bot stays quiet by default.
-        card = None if arm is Arm.NOTHING else compose(arm)
+        card = None if arm is Arm.NOTHING else self.compose(arm)
         if card:
             pending = PendingAction(
                 id=window_id,
@@ -348,18 +398,21 @@ class Controller:
                 expires_at=now + SUGGESTION_TTL_S,
             )
             self._pending = pending
-            self._publish(
+            self._emit(
                 "controller.action",
                 _action(window_id, decision, card, metrics, now, autonomy),
             )
             if not pending.awaiting_approval:
                 self._deliver(pending, now)
         else:
+            # A control is only usable against treatments of its own width, so point each
+            # one at whichever pool is emptiest rather than always measuring 60s.
             self._window = self._rewards.open(
-                window_id, state, arm, now, fired=False, origin=origin
+                window_id, state, arm, now, fired=False, origin=origin,
+                window_s=self._rewards.starved_width(state),
             )
             self._card = None
-        self._publish(
+        self._emit(
             "controller.bandit",
             {
                 **self._bandit.snapshot(),
@@ -390,7 +443,7 @@ class Controller:
         if not (pending and pending.awaiting_approval and now >= pending.expires_at):
             return
         self._pending = None
-        self._publish("controller.result", _pending_result(pending, "railed"))
+        self._emit("controller.result", _pending_result(pending, "railed"))
 
     def _fire_chance(self, arm: Arm) -> float:
         """Slider rate (fires/minute) turned into a per-tick firing probability."""
@@ -403,6 +456,7 @@ class Controller:
             arm
             for arm in BANDIT_ARMS
             if arm is not Arm.NOTHING
+            and arm not in APPROVAL_ONLY_ARMS
             and self.autonomy[arm] is not Autonomy.OFF
             and not self._capped(arm, now)
             and random.random() < self._fire_chance(arm)
@@ -422,7 +476,7 @@ class Controller:
         self._fires.append((now, Arm.CHAT_DIGEST))
         who, text = highlight
         card = Card("Chat digest", f"@{who}: {text}", [])
-        self._publish("controller.digest", _digest(card, highlight, now))
+        self._emit("controller.digest", _digest(card, highlight, now))
 
     def _close_due(self, now: float) -> None:
         window, card = self._window, self._card
@@ -430,31 +484,29 @@ class Controller:
             return
         self._window = self._card = None
 
-        outcome = self._rewards.close(window, now)
+        tally, voters = self._ballots(window, card)
+        outcome = self._rewards.close(window, now, voters=voters)
         if (
             window.origin is TrialOrigin.AUTONOMOUS
             and outcome.contaminated is None
         ):
             self._bandit.update(window.state, window.arm, outcome.reward)
-        self._publish(
+        self._emit(
             "controller.result",
             _result(
                 window,
                 outcome,
                 "fired" if window.fired else "skipped",
-                self._votes(window, card),
+                tally,
             ),
         )
-        self._publish(
+        self._emit(
             "controller.bandit",
             {**self._bandit.snapshot(), "type": "bandit", "ts": _iso(now)},
         )
 
-    def _votes(self, window: Window, card: Card | None) -> dict[str, int]:
-        """A real poll without a poll API: the bot asked, chat replied, we count."""
-        return self._ballots(window, card)[0]
-
     def _ballots(self, window: Window, card: Card | None) -> tuple[dict[str, int], int]:
+        """A real poll without a poll API: the bot asked, chat replied, we count."""
         return ballots(self._store, card.options if card else [], window.opened_at)
 
     def _poll_frame(self, window: Window, card: Card, now: float) -> dict:
@@ -677,6 +729,9 @@ def _result(
         # Null when the window is attributable; a plain-words reason when it is not.
         "contaminated": outcome.contaminated if outcome else None,
         "controls": outcome.controls if outcome else 0,
+        "activated": outcome.activated if outcome else 0,
+        "voters": outcome.voters if outcome else 0,
+        "window_s": window.length,
         "outcome": status,
     }
 
@@ -697,6 +752,9 @@ def _pending_result(
         "lift_naive": 0.0,
         "contaminated": reason,
         "controls": 0,
+        "activated": 0,
+        "voters": 0,
+        "window_s": window_for(pending.decision.arm),
         "outcome": status,
     }
 
@@ -747,7 +805,7 @@ def _buried_highlight(store: EventStore) -> tuple[str, str] | None:
     with the most independent askers", which is what makes it worth surfacing on a digest
     instead of reacting to a single message.
     """
-    counts: Counter[str] = Counter()
+    askers: dict[str, set[str]] = {}
     first_seen: dict[str, tuple[str, str]] = {}
     for i, ev in enumerate(store.iter_recent()):
         if i >= SCAN_LIMIT:
@@ -755,15 +813,19 @@ def _buried_highlight(store: EventStore) -> tuple[str, str] | None:
         content = (ev.payload.get("content") or "").strip()
         if ev.type != EventType.CHAT_MESSAGE_SENT or not content.endswith("?"):
             continue
-        if ev.username("sender") == BOT_NAME:  # our own line is not a buried question
+        who = ev.username("sender")
+        if who == BOT_NAME:  # our own line is not a buried question
             continue
         key = _normalise(content)
-        counts[key] += 1
-        first_seen.setdefault(key, (ev.username("sender") or "someone", content))
-    recurring = [key for key, n in counts.items() if n >= 2]
+        # Distinct askers, not messages. Counting messages made one impatient person
+        # typing "song id?" three times look exactly like a room that wants an answer,
+        # and it is the second kind that is worth taking the streamer's attention for.
+        askers.setdefault(key, set()).add(who or "someone")
+        first_seen.setdefault(key, (who or "someone", content))
+    recurring = [key for key, people in askers.items() if len(people) >= 2]
     if not recurring:
         return None
-    return first_seen[max(recurring, key=lambda k: counts[k])]
+    return first_seen[max(recurring, key=lambda key: len(askers[key]))]
 
 
 def _iso(moment: float) -> str:

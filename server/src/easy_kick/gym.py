@@ -340,8 +340,11 @@ def simulate(*, seed: int, decisions: int, policy: str = "gambit", truth: bool =
 
     controller = Controller(monitor=monitor, bandit=brain, rewards=RewardBook(monitor),
                         context=context, store=store, publish=publish, perform=fire)
-    # Nobody is at the keyboard headless, and an unanswered card is a voided window.
+    # Nobody is at the keyboard headless, and an unanswered card is a voided window. Keep
+    # approval-only arms out of this unattended evaluator; the interactive gym leaves the
+    # default `ask` rail intact and lets the streamer approve Prediction in the dashboard.
     controller.autonomy = dict.fromkeys(controller.autonomy, Autonomy.AUTO)
+    controller.autonomy[Arm.PREDICTION] = Autonomy.OFF
 
     for step in range(max_steps):
         gym.step(tick_s)

@@ -86,8 +86,14 @@ export type ResultFrame = {
   lift_true?: number; // gym only — twin-world ground truth
   /** Why this window cannot be read as an effect, in plain words. Null when it can. */
   contaminated: string | null;
-  /** Clean same-state windows the matched control averaged. 0 means there was no control. */
+  /** Clean same-state, same-width windows the control averaged. 0 means there was none. */
   controls: number;
+  /** Viewers silent before this window who talked inside it — reach, not net headcount. */
+  activated: number;
+  /** Distinct viewers who answered, when the arm asked something. */
+  voters: number;
+  /** How long this window stayed open. Per-arm, so not every row is the same width. */
+  window_s: number;
   outcome: 'fired' | 'dismissed' | 'skipped' | 'railed' | 'send_failed';
   // contract v2 asks for label / replies / held_s / raiders — not yet
 };

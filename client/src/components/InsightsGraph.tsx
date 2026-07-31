@@ -62,6 +62,12 @@ function nearestIndex(elapsed: number[], target: number): number {
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
+/** Width of a `00:00:00` label, in a unit that tracks the font. */
+const LABEL_CH = '8ch';
+
+const centred = (at: string, w: string) =>
+  `clamp(0px, calc(${at} - ${w} / 2), calc(100% - ${w}))`;
+
 /** An SVG path through the whole of `data`, scaled to `max` within a box of height `h`. */
 function line(data: number[], max: number, h: number, pad: number, x: (i: number) => number) {
   const y = (v: number) => h - (v / max) * (h - pad) - pad / 2;
@@ -244,15 +250,16 @@ export default function InsightsGraph({
           <div className="relative h-2.5">
             {interventions.map(({ index, result: r }) => {
               const on = hover === index;
+              const size = on ? 9 : 5;
               return (
                 <span key={r.action_id}
                   onMouseEnter={() => setHover(index)}
                   onMouseLeave={() => setHover(null)}
-                  className="absolute bottom-0 block -translate-x-1/2 cursor-pointer rounded-[1px] transition-[width,height,opacity]"
+                  className="absolute bottom-0 block cursor-pointer rounded-[1px] transition-[width,height,opacity]"
                   style={{
-                    left: `${(index / (len - 1)) * 100}%`,
-                    width: on ? 9 : 5,
-                    height: on ? 9 : 5,
+                    left: centred(`${(index / (len - 1)) * 100}%`, `${size}px`),
+                    width: size,
+                    height: size,
                     background: VERDICT_COLOR[labelFor(r)],
                     opacity: on ? 1 : 0.8,
                   }} />
@@ -289,8 +296,10 @@ export default function InsightsGraph({
           {elapsedS && elapsedS.length >= 2 && (
             <div className="relative mt-1 h-3 text-[9px] text-[var(--text-muted)]">
               {ticks.map((t) => (
-                <span key={t} className="absolute -translate-x-1/2 whitespace-nowrap"
-                  style={{ left: `${(nearestIndex(elapsedS, t) / (len - 1)) * 100}%` }}>
+                <span key={t} className="absolute whitespace-nowrap"
+                  style={{
+                    left: centred(`${(nearestIndex(elapsedS, t) / (len - 1)) * 100}%`, LABEL_CH),
+                  }}>
                   {fmt(t)}
                 </span>
               ))}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { ExternalLink, MessageSquare } from 'lucide-react';
 import Nav from './Nav';
 import Sidebar from './Sidebar';
@@ -12,7 +12,8 @@ import IconRail from './IconRail';
 import ActivityFeed from './ActivityFeed';
 import Insights from './Insights';
 import Chat from '../components/Chat';
-import { useGambit, gym } from '../useGambit';
+import { useGambit } from '../useGambit';
+import { useGymControls } from './useGymControls';
 
 /**
  * Gambit rehoused in a replica of dashboard.kick.com/stream.
@@ -31,34 +32,7 @@ import { useGambit, gym } from '../useGambit';
 export default function KickDashboard() {
   const s = useGambit();
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [gymStatus, setGymStatus] = useState<'idle' | 'running' | 'paused'>('idle');
-  const [gymSpeed, setGymSpeed] = useState(5);
-
-  useEffect(() => {
-    void gym
-      .status()
-      .then((g) => setGymStatus(g.status))
-      .catch(() => undefined);
-  }, []);
-
-  const startGym = async () => {
-    await gym.start(gymSpeed, 7);
-    setGymStatus('running');
-  };
-  const pauseGym = async () => {
-    await gym.pause();
-    setGymStatus('paused');
-  };
-  const stopGym = async () => {
-    await gym.stop();
-    s.reset();
-    setGymStatus('idle');
-  };
-  const changeGymSpeed = (speed: number) => {
-    setGymSpeed(speed);
-    // Idle: nothing to hot-change, `speed` just gets picked up on the next Start.
-    if (gymStatus !== 'idle') void gym.setSpeed(speed);
-  };
+  const gym = useGymControls(s.reset);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[var(--bg-page)]">
@@ -73,8 +47,8 @@ export default function KickDashboard() {
             <div className="shrink-0">
               <SessionInfo
                 context={s.context}
-                live={gymStatus === 'running'}
-                speed={gymSpeed}
+                live={gym.status === 'running'}
+                speed={gym.speed}
                 viewerSpark={s.viewerSpark}
                 activeViewersSpark={s.activeViewersSpark}
                 actionsSpark={s.actionsSpark}
@@ -128,14 +102,7 @@ export default function KickDashboard() {
           </Panel>
 
           <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-1">
-            <StreamInfo
-              gymStatus={gymStatus}
-              gymSpeed={gymSpeed}
-              onChangeGymSpeed={changeGymSpeed}
-              onStartGym={() => void startGym()}
-              onPauseGym={() => void pauseGym()}
-              onStopGym={() => void stopGym()}
-            />
+            <StreamInfo gym={gym} />
             <ChannelActions />
           </div>
         </main>

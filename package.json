@@ -10,8 +10,8 @@
   "scripts": {
     "dev": "concurrently -n server,client -c blue,magenta \"pnpm:_server\" \"pnpm:_client\"",
     "dev:simulator": "concurrently -n server,client -c yellow,magenta \"pnpm:_server:sim\" \"pnpm:_client:sim\"",
-    "_server": "cd server && uv run uvicorn easy_kick.main:app --port 8000 --reload",
-    "_server:sim": "cd server && KICK_SIMULATOR_ENABLED=true uv run uvicorn easy_kick.main:app --port 8000 --reload",
+    "_server": "cd server && exec uv run uvicorn easy_kick.main:app --port 8000 --reload",
+    "_server:sim": "cd server && KICK_SIMULATOR_ENABLED=true exec uv run uvicorn easy_kick.main:app --port 8000 --reload",
     "_client": "cd client && pnpm dev",
     "_client:sim": "cd client && pnpm dev --mode simulator",
     "build": "cd client && pnpm build",

@@ -43,32 +43,20 @@ export function useGymControls(onStop?: () => void) {
     };
   }, []);
 
-  const start = async () => {
-    await gym.start(speed, 7);
-    setStatus('running');
-  };
-  const pause = async () => {
-    await gym.pause();
-    setStatus('paused');
-  };
-  const stop = async () => {
-    await gym.stop();
-    onStop?.();
-    setStatus('idle');
-  };
-  const changeSpeed = (next: number) => {
-    setSpeed(next);
-    // Idle: nothing to hot-change, `next` just gets picked up on the next Start.
-    if (status !== 'idle') void gym.setSpeed(next);
-  };
-
   return {
     status,
     speed,
-    changeSpeed,
-    start: () => void start(),
-    pause: () => void pause(),
-    stop: () => void stop(),
+    changeSpeed: (next: number) => {
+      setSpeed(next);
+      // Idle: nothing to hot-change, `next` just gets picked up on the next Start.
+      if (status !== 'idle') void gym.setSpeed(next);
+    },
+    start: () => void gym.start(speed, 7).then(() => setStatus('running')),
+    pause: () => void gym.pause().then(() => setStatus('paused')),
+    stop: () => void gym.stop().then(() => {
+      onStop?.();
+      setStatus('idle');
+    }),
   };
 }
 

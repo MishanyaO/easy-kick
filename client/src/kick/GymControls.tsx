@@ -70,18 +70,11 @@ export default function GymControls({
     </span>
   );
 
-  if (bar) {
-    return (
-      <div className="flex items-center gap-2">
-        {label}
-        {speeds}
-        {buttons}
-      </div>
-    );
-  }
-
+  // Same three pieces in the same order either way — only how they stack differs.
   return (
-    <div className="mt-3 flex flex-col gap-2 border-t border-[var(--border)] pt-3">
+    <div className={bar
+      ? 'flex items-center gap-2'
+      : 'mt-3 flex flex-col gap-2 border-t border-[var(--border)] pt-3'}>
       {label}
       {speeds}
       {buttons}

@@ -56,13 +56,33 @@ class GymState:
 
 
 async def _run_gym(app, state: GymState) -> None:
-    """Map virtual time onto wall time at `speed`×, ticking the controller as we go."""
+    """Map virtual time onto wall time at `speed`×, ticking the controller as we go.
+
+    Below 5×, stepping the gym once per `TICK_S` means a real second can pass between
+    chat bursts — every persona's whole `TICK_S`-worth of Poisson-sampled lines lands in
+    one lump. Capping the wall-clock sleep at 1s and stepping the gym by a
+    correspondingly smaller `dt_s` spreads the same messages over more, smaller bursts
+    without changing the total rate. The controller still ticks once per `TICK_S` of
+    virtual time — its decision cadence (cooldowns, fire-rate math) is defined in terms
+    of that constant and must not drift with the finer gym step.
+    """
     controller: Controller = app.state.controller
+    # A frame before the first sleep, so the dashboard has an uptime to show immediately
+    # rather than a dash for the first `TICK_S/speed` seconds. It cannot decide anything
+    # this early — warmup gates that — so it costs nothing but the frame.
+    app.state.context.viewer_count = state.gym.viewers
+    controller.tick(state.gym.now)
+    virtual_since_tick = 0.0
     while True:
-        await asyncio.sleep(TICK_S / state.speed)
-        state.gym.step(TICK_S)
+        wall_s = min(TICK_S / state.speed, 1.0)
+        await asyncio.sleep(wall_s)
+        dt_s = wall_s * state.speed
+        state.gym.step(dt_s)
         app.state.context.viewer_count = state.gym.viewers
-        controller.tick(state.gym.now)
+        virtual_since_tick += dt_s
+        if virtual_since_tick >= TICK_S:
+            virtual_since_tick -= TICK_S
+            controller.tick(state.gym.now)
 
 
 def gym_fire(app, state: GymState):

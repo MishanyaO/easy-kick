@@ -29,6 +29,9 @@ const W = 640;
  *  the session grows, instead of the session being compressed into the panel. */
 const PX_PER_SAMPLE = 7;
 const MAP_H = 22;
+/** How far the minimap's drag handles can zoom in — narrower than this and there's nothing
+ *  left to read off the chart. */
+const MAX_ZOOM = 30;
 /** One time label per this many pixels of chart. */
 const PX_PER_TICK = 130;
 /** The measurement window every decision opens, in virtual seconds. */
@@ -58,6 +61,12 @@ function nearestIndex(elapsed: number[], target: number): number {
 }
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+
+/** Width of a `00:00:00` label, in a unit that tracks the font. */
+const LABEL_CH = '8ch';
+
+const centred = (at: string, w: string) =>
+  `clamp(0px, calc(${at} - ${w} / 2), calc(100% - ${w}))`;
 
 /** An SVG path through the whole of `data`, scaled to `max` within a box of height `h`. */
 function line(data: number[], max: number, h: number, pad: number, x: (i: number) => number) {
@@ -89,10 +98,40 @@ export default function InsightsGraph({
   const [live, setLive] = useState(true);
   /** The visible slice as fractions of the scroll width, for the minimap's frame. */
   const [view, setView] = useState({ start: 0, size: 1 });
-  const [dragging, setDragging] = useState(false);
+  const [dragMode, setDragMode] = useState<'pan' | 'left' | 'right' | null>(null);
+  /** How much denser than the base density the chart is drawn at. 1 until a minimap
+   *  handle is dragged; the only way to zoom in, since scrolling alone can't. */
+  const [zoom, setZoom] = useState(1);
+  /** The band edge not being dragged, captured when a resize starts — the fixed end a
+   *  resize pivots around. */
+  const dragAnchorRef = useRef<number | null>(null);
+  /** A scrollLeft to apply once the zoom that made it valid has actually painted. */
+  const pendingScrollLeftRef = useRef<number | null>(null);
 
   const len = Math.max(0, ...series.map((s) => s.data.length));
-  const contentPx = Math.round(len * PX_PER_SAMPLE);
+  /** The chart's width at zoom 1 — the unit both the minimap fractions and the zoom maths
+   *  are expressed in. */
+  const basePx = len * PX_PER_SAMPLE;
+  const contentPx = Math.round(basePx * zoom);
+
+  /** Re-read where the scroller actually is, for the minimap's frame and the follow flag. */
+  const syncView = (el: HTMLDivElement) => {
+    setLive(el.scrollWidth - el.clientWidth - el.scrollLeft < 4);
+    setView({
+      start: el.scrollLeft / Math.max(1, el.scrollWidth),
+      size: el.clientWidth / Math.max(1, el.scrollWidth),
+    });
+  };
+
+  // A resize handle just changed `zoom`; the scrollWidth it implies only exists after
+  // this render commits, so the scrollLeft it was computed for is applied here.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || pendingScrollLeftRef.current == null) return;
+    el.scrollLeft = pendingScrollLeftRef.current;
+    pendingScrollLeftRef.current = null;
+    syncView(el);
+  }, [zoom]);
 
   // Keep the newest sample on screen while following, and keep the minimap's frame honest
   // about where the scroller actually is.
@@ -125,13 +164,7 @@ export default function InsightsGraph({
     : null;
 
   const onScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    setLive(el.scrollWidth - el.clientWidth - el.scrollLeft < 4);
-    setView({
-      start: el.scrollLeft / Math.max(1, el.scrollWidth),
-      size: el.clientWidth / Math.max(1, el.scrollWidth),
-    });
+    if (scrollRef.current) syncView(scrollRef.current);
   };
 
   const toLive = () => {
@@ -149,7 +182,7 @@ export default function InsightsGraph({
     const near = interventions.reduce((best, iv) =>
       Math.abs(iv.index - at) < Math.abs(best.index - at) ? iv : best);
     // A fixed pixel tolerance, converted to samples — the same feel at any zoom.
-    setHover(Math.abs(near.index - at) <= 8 / PX_PER_SAMPLE ? near.index : null);
+    setHover(Math.abs(near.index - at) <= 8 / (PX_PER_SAMPLE * zoom) ? near.index : null);
   };
 
   /** Centre the scroller on a point in the minimap. */
@@ -159,6 +192,29 @@ export default function InsightsGraph({
     if (!el || !rect) return;
     const frac = clamp((clientX - rect.left) / rect.width, 0, 1);
     el.scrollLeft = frac * el.scrollWidth - el.clientWidth / 2;
+  };
+
+  /** Drag a minimap band edge to narrow (zoom in) or widen (zoom out) the visible slice,
+   *  pivoting on the edge not being dragged. Re-derives zoom from the requested band width,
+   *  since that width is what the user is actually asking for. */
+  const resizeEdge = (edge: 'left' | 'right', clientX: number) => {
+    const el = scrollRef.current;
+    const rect = mapRef.current?.getBoundingClientRect();
+    const anchor = dragAnchorRef.current;
+    if (!el || !rect || anchor == null) return;
+    const frac = clamp((clientX - rect.left) / rect.width, 0, 1);
+    const minSize = el.clientWidth / (basePx * MAX_ZOOM);
+    // The dragged edge can come no closer to the anchor than one minimum band width.
+    const moved = edge === 'left'
+      ? clamp(frac, 0, anchor - minSize)
+      : clamp(frac, anchor + minSize, 1);
+    const size = Math.abs(moved - anchor);
+    const start = clamp(Math.min(moved, anchor), 0, 1 - size);
+
+    const newZoom = clamp(el.clientWidth / (basePx * size), 1, MAX_ZOOM);
+    pendingScrollLeftRef.current = start * basePx * newZoom;
+    setLive(false);
+    setZoom(newZoom);
   };
 
   const ticks = elapsedS && elapsedS.length >= 2
@@ -197,15 +253,16 @@ export default function InsightsGraph({
           <div className="relative h-2.5">
             {interventions.map(({ index, result: r }) => {
               const on = hover === index;
+              const size = on ? 9 : 5;
               return (
                 <span key={r.action_id}
                   onMouseEnter={() => setHover(index)}
                   onMouseLeave={() => setHover(null)}
-                  className="absolute bottom-0 block -translate-x-1/2 cursor-pointer rounded-[1px] transition-all"
+                  className="absolute bottom-0 block cursor-pointer rounded-[1px] transition-[width,height,opacity]"
                   style={{
-                    left: `${(index / (len - 1)) * 100}%`,
-                    width: on ? 9 : 5,
-                    height: on ? 9 : 5,
+                    left: centred(`${(index / (len - 1)) * 100}%`, `${size}px`),
+                    width: size,
+                    height: size,
                     background: VERDICT_COLOR[labelFor(r)],
                     opacity: on ? 1 : 0.8,
                   }} />
@@ -242,8 +299,10 @@ export default function InsightsGraph({
           {elapsedS && elapsedS.length >= 2 && (
             <div className="relative mt-1 h-3 text-[9px] text-[var(--text-muted)]">
               {ticks.map((t) => (
-                <span key={t} className="absolute -translate-x-1/2 whitespace-nowrap"
-                  style={{ left: `${(nearestIndex(elapsedS, t) / (len - 1)) * 100}%` }}>
+                <span key={t} className="absolute whitespace-nowrap"
+                  style={{
+                    left: centred(`${(nearestIndex(elapsedS, t) / (len - 1)) * 100}%`, LABEL_CH),
+                  }}>
                   {fmt(t)}
                 </span>
               ))}
@@ -296,16 +355,20 @@ export default function InsightsGraph({
       </div>
 
       {/* The minimap: the whole session at a glance, and the one thing the scrollbar cannot
-          show you — where in it anything actually happened. Only once the session outgrows
-          the panel; before that the chart above already is the whole session. */}
-      {view.size < 0.999 && (
+          show you — where in it anything actually happened. Always on, not just once the
+          session outgrows the panel, so it doesn't pop in mid-stream. Its band's edges
+          double as zoom handles — drag one in to zoom to that stretch, drag it back out
+          to zoom out. */}
       <svg ref={mapRef} viewBox={`0 0 ${W} ${MAP_H}`} preserveAspectRatio="none"
         className="mt-1 cursor-pointer"
         style={{ display: 'block', width: '100%', height: MAP_H }}
-        onMouseDown={(e) => { setDragging(true); jumpTo(e.clientX); }}
-        onMouseMove={(e) => { if (dragging) jumpTo(e.clientX); }}
-        onMouseUp={() => setDragging(false)}
-        onMouseLeave={() => setDragging(false)}
+        onMouseDown={(e) => { setDragMode('pan'); jumpTo(e.clientX); }}
+        onMouseMove={(e) => {
+          if (dragMode === 'pan') jumpTo(e.clientX);
+          else if (dragMode) resizeEdge(dragMode, e.clientX);
+        }}
+        onMouseUp={() => setDragMode(null)}
+        onMouseLeave={() => setDragMode(null)}
       >
         <rect x={0} y={0} width={W} height={MAP_H} fill="var(--bg-elevated)" />
         {series.map(({ data, color }, i) => (
@@ -321,8 +384,19 @@ export default function InsightsGraph({
         <rect x={view.start * W} width={Math.max(2, view.size * W)} y={0} height={MAP_H}
           fill="var(--text-primary)" fillOpacity={0.1}
           stroke="var(--kick-green)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+        {/* A grab strip over each band edge. Dragging one pivots on the other, which is
+            why the anchor is the opposite edge. */}
+        {([['left', view.start, view.start + view.size],
+          ['right', view.start + view.size, view.start]] as const).map(([edge, at, anchor]) => (
+          <rect key={edge} x={at * W - 4} y={0} width={8} height={MAP_H} fill="transparent"
+            style={{ cursor: 'ew-resize' }}
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              dragAnchorRef.current = anchor;
+              setDragMode(edge);
+            }} />
+        ))}
       </svg>
-      )}
     </div>
   );
 }

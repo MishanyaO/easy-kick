@@ -44,8 +44,15 @@ STATE_GAIN = {ChatState.LULL: 1.4, ChatState.STEADY: 1.0, ChatState.SPIKE: -0.3}
 FATIGUE_PER_FIRE = 0.6  # the fourth emote rally in an hour lands worse than the first
 FATIGUE_RECOVERY_S = 1800.0
 
-CHATTER = ("nice", "lets go", "🔥", "no way", "gg", "how did he do that?", "first time here",
-           "that was clean", "🚀🚀", "wait what did I miss?", "lmao", "insane")
+# Real Kick chat is mostly emotes, inlined in the message body as `[emote:<id>:<name>]` —
+# the client parses that token out and renders the art. These ids are Kick's global
+# `emoji*` set; the client vendors the same ten so they render without the CDN.
+CHATTER = ("nice", "lets go", "[emote:1730756:emojiCheerful]", "no way", "gg",
+           "how did he do that?", "first time here", "that was clean",
+           "[emote:1579033:emojiAstonished][emote:1579033:emojiAstonished]",
+           "wait what did I miss?", "lmao [emote:1730760:emojiCrave]", "insane",
+           "[emote:1730752:emojiAngel]", "[emote:1730753:emojiAngry] ref??",
+           "[emote:1730759:emojiCool]", "clip that [emote:1730755:emojiBubbly]")
 
 
 @dataclass(frozen=True)

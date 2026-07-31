@@ -1,8 +1,5 @@
 import { Settings, Smile, UserCircle2 } from 'lucide-react';
-
-// Kick shows a row of channel emotes above the input. We have no licence to
-// their emote art, so these are plain Unicode emoji standing in for it.
-const EMOTES = ['😂', '😭', '🔥', '💀', '👀', '🎉', '😅', '❤️', '🤝', '🧠'];
+import { VENDORED_EMOTES as EMOTES, emoteSrc } from './emotes';
 
 /** Kick's chat composer. Static — the input does not send anything. */
 export default function ChatComposer() {
@@ -11,11 +8,17 @@ export default function ChatComposer() {
       <div className="mb-2 flex items-center justify-between gap-1">
         {EMOTES.map((e) => (
           <button
-            key={e}
-            aria-label={`Insert ${e}`}
-            className="flex size-6 shrink-0 items-center justify-center rounded text-base leading-none transition-colors hover:bg-[var(--bg-elevated)]"
+            key={e.id}
+            aria-label={`Insert ${e.name}`}
+            title={e.name}
+            className="flex size-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--bg-elevated)]"
           >
-            {e}
+            <img
+              src={emoteSrc(e.id)}
+              alt={e.name}
+              draggable={false}
+              className="size-[22px] object-contain"
+            />
           </button>
         ))}
       </div>

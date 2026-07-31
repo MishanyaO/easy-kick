@@ -13,6 +13,7 @@ import { X } from 'lucide-react';
 import type { ChatFrame, PollFrame } from '../types';
 import { BOT_NAME, type ClosedPoll } from '../useGambit';
 import { ModerationIcon } from '../kick/icons';
+import { emoteSrc } from '../kick/emotes';
 
 /**
  * The poll, pinned above the message list in the same slot the plain last-line banner
@@ -172,7 +173,7 @@ function Body({ text }: { text: string }) {
       >
         <img
           className="absolute left-0 top-1/2 h-[2.15em] w-[2.15em] -translate-y-1/2"
-          src={`https://files.kick.com/emotes/${m[1]}/fullsize`}
+          src={emoteSrc(m[1])}
           alt={m[2]}
           title={m[2]}
           draggable={false}

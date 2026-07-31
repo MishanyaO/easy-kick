@@ -6,10 +6,15 @@
 // the Tactics tab live. Same SSE subscription as the dashboard tab.
 import { LineChart } from 'lucide-react';
 import Review from '../components/Review';
+import GymControls from './GymControls';
+import { useGymControls } from './useGymControls';
 import { useGambit } from '../useGambit';
 
 export default function InsightsPage() {
   const s = useGambit();
+  // Same server-side gym the dashboard drives — this tab just gets its own buttons,
+  // so you can start and stop a run without going back to the other tab.
+  const gym = useGymControls(s.reset);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[var(--bg-surface)]">
@@ -23,6 +28,9 @@ export default function InsightsPage() {
           title={s.connected ? 'Connected' : 'Disconnected'}
           style={{ background: s.connected ? 'var(--kick-green)' : 'var(--danger)' }}
         />
+        <div className="ml-auto shrink-0">
+          <GymControls gym={gym} variant="bar" />
+        </div>
       </header>
 
       <div className="min-h-0 flex-1 overflow-hidden p-6">

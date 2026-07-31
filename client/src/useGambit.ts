@@ -15,7 +15,6 @@ const CONTROL_KEY = import.meta.env.VITE_CONTROL_API_KEY;
 const controlHeaders = (): Record<string, string> =>
   CONTROL_KEY ? { 'X-Control-Key': CONTROL_KEY } : {};
 
-const MAX_CHAT = 80;
 const MAX_SPARK = 90;
 const BACKLOG = 200; // chat messages replayed on connect // ~3 min of context frames at one every 2s
 
@@ -144,7 +143,7 @@ function reduce(s: GambitState, m: Msg): GambitState {
       const isBot = f.username === BOT_NAME;
       return {
         ...s,
-        chat: [...s.chat.slice(-MAX_CHAT + 1), f],
+        chat: [...s.chat, f],
         lastBot: isBot ? f : s.lastBot,
         // A new bot line is "a new thing" — the closed poll's tally has had its moment.
         closedPoll: isBot ? null : s.closedPoll,

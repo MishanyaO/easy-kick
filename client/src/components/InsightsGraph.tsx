@@ -29,6 +29,9 @@ const W = 640;
  *  the session grows, instead of the session being compressed into the panel. */
 const PX_PER_SAMPLE = 7;
 const MAP_H = 22;
+/** How far the minimap's drag handles can zoom in — narrower than this and there's nothing
+ *  left to read off the chart. */
+const MAX_ZOOM = 30;
 /** One time label per this many pixels of chart. */
 const PX_PER_TICK = 130;
 /** The measurement window every decision opens, in virtual seconds. */
@@ -89,10 +92,32 @@ export default function InsightsGraph({
   const [live, setLive] = useState(true);
   /** The visible slice as fractions of the scroll width, for the minimap's frame. */
   const [view, setView] = useState({ start: 0, size: 1 });
-  const [dragging, setDragging] = useState(false);
+  const [dragMode, setDragMode] = useState<'pan' | 'left' | 'right' | null>(null);
+  /** How much denser than the base density the chart is drawn at. 1 until a minimap
+   *  handle is dragged; the only way to zoom in, since scrolling alone can't. */
+  const [zoom, setZoom] = useState(1);
+  /** The band edge not being dragged, captured when a resize starts — the fixed end a
+   *  resize pivots around. */
+  const dragAnchorRef = useRef<number | null>(null);
+  /** A scrollLeft to apply once the zoom that made it valid has actually painted. */
+  const pendingScrollLeftRef = useRef<number | null>(null);
 
   const len = Math.max(0, ...series.map((s) => s.data.length));
-  const contentPx = Math.round(len * PX_PER_SAMPLE);
+  const contentPx = Math.round(len * PX_PER_SAMPLE * zoom);
+
+  // A resize handle just changed `zoom`; the scrollWidth it implies only exists after
+  // this render commits, so the scrollLeft it was computed for is applied here.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || pendingScrollLeftRef.current == null) return;
+    el.scrollLeft = pendingScrollLeftRef.current;
+    pendingScrollLeftRef.current = null;
+    setLive(el.scrollWidth - el.clientWidth - el.scrollLeft < 4);
+    setView({
+      start: el.scrollLeft / Math.max(1, el.scrollWidth),
+      size: el.clientWidth / Math.max(1, el.scrollWidth),
+    });
+  }, [zoom]);
 
   // Keep the newest sample on screen while following, and keep the minimap's frame honest
   // about where the scroller actually is.
@@ -159,6 +184,28 @@ export default function InsightsGraph({
     if (!el || !rect) return;
     const frac = clamp((clientX - rect.left) / rect.width, 0, 1);
     el.scrollLeft = frac * el.scrollWidth - el.clientWidth / 2;
+  };
+
+  /** Drag a minimap band edge to narrow (zoom in) or widen (zoom out) the visible slice,
+   *  pivoting on the edge not being dragged. Re-derives zoom from the requested band width,
+   *  since that width is what the user is actually asking for. */
+  const resizeEdge = (edge: 'left' | 'right', clientX: number) => {
+    const el = scrollRef.current;
+    const rect = mapRef.current?.getBoundingClientRect();
+    const anchor = dragAnchorRef.current;
+    if (!el || !rect || anchor == null) return;
+    const frac = clamp((clientX - rect.left) / rect.width, 0, 1);
+    const minSize = el.clientWidth / (len * PX_PER_SAMPLE * MAX_ZOOM);
+    let s = edge === 'left' ? frac : anchor;
+    let e = edge === 'left' ? anchor : frac;
+    if (e - s < minSize) { if (edge === 'left') s = e - minSize; else e = s + minSize; }
+    s = clamp(s, 0, 1 - minSize);
+    e = clamp(e, minSize, 1);
+
+    const newZoom = clamp(el.clientWidth / (len * PX_PER_SAMPLE * (e - s)), 1, MAX_ZOOM);
+    pendingScrollLeftRef.current = s * len * PX_PER_SAMPLE * newZoom;
+    setLive(false);
+    setZoom(newZoom);
   };
 
   const ticks = elapsedS && elapsedS.length >= 2
@@ -296,16 +343,21 @@ export default function InsightsGraph({
       </div>
 
       {/* The minimap: the whole session at a glance, and the one thing the scrollbar cannot
-          show you — where in it anything actually happened. Only once the session outgrows
-          the panel; before that the chart above already is the whole session. */}
-      {view.size < 0.999 && (
+          show you — where in it anything actually happened. Always on, not just once the
+          session outgrows the panel, so it doesn't pop in mid-stream. Its band's edges
+          double as zoom handles — drag one in to zoom to that stretch, drag it back out
+          to zoom out. */}
       <svg ref={mapRef} viewBox={`0 0 ${W} ${MAP_H}`} preserveAspectRatio="none"
         className="mt-1 cursor-pointer"
         style={{ display: 'block', width: '100%', height: MAP_H }}
-        onMouseDown={(e) => { setDragging(true); jumpTo(e.clientX); }}
-        onMouseMove={(e) => { if (dragging) jumpTo(e.clientX); }}
-        onMouseUp={() => setDragging(false)}
-        onMouseLeave={() => setDragging(false)}
+        onMouseDown={(e) => { setDragMode('pan'); jumpTo(e.clientX); }}
+        onMouseMove={(e) => {
+          if (dragMode === 'pan') jumpTo(e.clientX);
+          else if (dragMode === 'left') resizeEdge('left', e.clientX);
+          else if (dragMode === 'right') resizeEdge('right', e.clientX);
+        }}
+        onMouseUp={() => setDragMode(null)}
+        onMouseLeave={() => setDragMode(null)}
       >
         <rect x={0} y={0} width={W} height={MAP_H} fill="var(--bg-elevated)" />
         {series.map(({ data, color }, i) => (
@@ -321,8 +373,21 @@ export default function InsightsGraph({
         <rect x={view.start * W} width={Math.max(2, view.size * W)} y={0} height={MAP_H}
           fill="var(--text-primary)" fillOpacity={0.1}
           stroke="var(--kick-green)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+        <rect x={view.start * W - 4} y={0} width={8} height={MAP_H} fill="transparent"
+          style={{ cursor: 'ew-resize' }}
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            dragAnchorRef.current = view.start + view.size;
+            setDragMode('left');
+          }} />
+        <rect x={(view.start + view.size) * W - 4} y={0} width={8} height={MAP_H} fill="transparent"
+          style={{ cursor: 'ew-resize' }}
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            dragAnchorRef.current = view.start;
+            setDragMode('right');
+          }} />
       </svg>
-      )}
     </div>
   );
 }

@@ -12,7 +12,6 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 import type { ChatFrame, PollFrame } from '../types';
 import { BOT_NAME, type ClosedPoll } from '../useGambit';
-import { ModerationIcon } from '../kick/icons';
 import { emoteSrc } from '../kick/emotes';
 
 /**
@@ -135,25 +134,115 @@ function hue(name: string) {
   return h;
 }
 
-/** Kick's sub badge, lifted from the chatroom markup (the green `sub_gifter` variant). */
-function SubBadge() {
+/** A per-user hash (FNV-1a), separate from `hue`, so derived badges don't track name colour. */
+function userHash(name: string) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < name.length; i++) {
+    h ^= name.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+type Role = 'mod' | 'vip' | null;
+
+// Real Kick level emblems, hotlinked from its CDN like `emoteSrc` — only the levels we have UUIDs for.
+const LEVEL_BADGES: Record<number, string> = {
+  1: 'https://ext.cdn.kick.com/chat/badges/1_17be7ee9-9ede-4f58-b6da-a2e1e4b1e56a.png',
+  7: 'https://ext.cdn.kick.com/chat/badges/7_bce852c7-f8c0-43e9-bba1-5ae987199625.png',
+  8: 'https://ext.cdn.kick.com/chat/badges/8_47c056a6-e00e-41dd-a540-df0e10f98329.png',
+  13: 'https://ext.cdn.kick.com/chat/badges/13_984e9f19-a4b7-44e2-8a39-3b240abeddc9.png',
+  14: 'https://ext.cdn.kick.com/chat/badges/14_eb93114d-ac72-4b51-b804-d77545652208.png',
+  15: 'https://ext.cdn.kick.com/chat/badges/15_61050dae-2221-4500-aca7-0d3793fe98e0.png',
+  25: 'https://ext.cdn.kick.com/chat/badges/25_f055d38e-8e80-4a99-8419-467bad3eb1ab.png',
+  31: 'https://ext.cdn.kick.com/chat/badges/31_019f35ce-472a-74da-b3bc-69e3f2363639.png',
+  45: 'https://ext.cdn.kick.com/chat/badges/45_82077115-61cb-4b5d-b036-31f13b96cfeb.png',
+};
+const LEVELS = [1, 7, 8, 13, 14, 15, 25, 31, 45]; // low→high, so the pick reads as a ladder
+
+/**
+ * Level, role, and sub for a chatter — stable across their messages. Derived, not from the
+ * wire: the gym sends no badges. Server `is_sub`/`is_mod` still win in `Row`.
+ */
+function identity(name: string): { level: number | null; role: Role; sub: boolean } {
+  const h = userHash(name);
+  const r = h % 100;
+  const role: Role = r < 3 ? 'mod' : r < 11 ? 'vip' : null; // ~3% mods, ~8% VIPs
+  const sub = ((h >>> 3) % 100) < 16;
+  const show = ((h >>> 8) % 100) < 38; // only some carry a visible level
+  const draw = ((h >>> 15) % 1000) / 1000;
+  const level = show ? LEVELS[Math.floor(draw * draw * LEVELS.length)] : null; // squared: skews low
+  return { level, role, sub };
+}
+
+function LevelBadge({ level }: { level: number }) {
   return (
-    <span className="inline-flex size-[1.35em] shrink-0 items-center" title="Subscriber">
+    <span className="inline-flex size-[1.35em] shrink-0 items-center" title={`Level ${level}`}>
+      <img className="size-full" alt={`Level ${level}`} src={LEVEL_BADGES[level]} draggable={false} />
+    </span>
+  );
+}
+
+/** Kick's VIP crown, used verbatim from the chatroom markup. */
+function VipBadge() {
+  return (
+    <span className="inline-flex size-[1.35em] shrink-0 items-center" title="VIP">
       <svg viewBox="0 0 32 32" fill="none" className="size-full" xmlns="http://www.w3.org/2000/svg">
-        <path d="M30 10H2V28H30V10Z" fill="#DDFED1" />
-        <path d="M12 10H10L6 4H14L16 7L18 4H26L22 10H20V28H12V10Z" fill="#53FC18" />
+        <g clipPath="url(#ek-vip-clip)">
+          <path d="M30 0C31.1046 0 32 0.895431 32 2V30C32 31.1046 31.1046 32 30 32H2C0.895431 32 0 31.1046 0 30V2C0 0.895431 0.895431 4.10637e-08 2 0H30ZM15.9648 5C15.7748 5.00005 15.588 5.05204 15.4238 5.15039C15.2596 5.24878 15.124 5.39057 15.0303 5.56055L9.82812 15.0176L3.55078 11.8906C3.36913 11.7985 3.16534 11.7607 2.96387 11.7822C2.76241 11.8038 2.57048 11.8842 2.41113 12.0127C2.25235 12.1408 2.13185 12.3126 2.06348 12.5078C1.99511 12.7031 1.98143 12.9144 2.02441 13.1172L4.58301 25.127C4.63544 25.3782 4.77165 25.6034 4.96777 25.7627C5.16376 25.9217 5.40762 26.0056 5.65723 26H26.251C26.5009 26.0057 26.7453 25.9219 26.9414 25.7627C27.1376 25.6034 27.2737 25.3782 27.3262 25.127L29.9697 13.1172C30.0187 12.9103 30.0086 12.6932 29.9404 12.4922C29.8722 12.2912 29.7485 12.1151 29.585 11.9844C29.4215 11.8537 29.2249 11.7743 29.0186 11.7559C28.8122 11.7374 28.6049 11.7802 28.4219 11.8799L22.1025 15.0283L16.9004 5.56055C16.8066 5.39054 16.6701 5.24878 16.5059 5.15039C16.3416 5.05207 16.1549 5 15.9648 5Z" fill="url(#ek-vip-a)" />
+          <path d="M30 0C31.1046 0 32 0.895431 32 2V30C32 31.1046 31.1046 32 30 32H2C0.895431 32 0 31.1046 0 30V2C0 0.895431 0.895431 4.10637e-08 2 0H30ZM15.9648 5C15.7748 5.00005 15.588 5.05204 15.4238 5.15039C15.2596 5.24878 15.124 5.39057 15.0303 5.56055L9.82812 15.0176L3.55078 11.8906C3.36913 11.7985 3.16534 11.7607 2.96387 11.7822C2.76241 11.8038 2.57048 11.8842 2.41113 12.0127C2.25235 12.1408 2.13185 12.3126 2.06348 12.5078C1.99511 12.7031 1.98143 12.9144 2.02441 13.1172L4.58301 25.127C4.63544 25.3782 4.77165 25.6034 4.96777 25.7627C5.16376 25.9217 5.40762 26.0056 5.65723 26H26.251C26.5009 26.0057 26.7453 25.9219 26.9414 25.7627C27.1376 25.6034 27.2737 25.3782 27.3262 25.127L29.9697 13.1172C30.0187 12.9103 30.0086 12.6932 29.9404 12.4922C29.8722 12.2912 29.7485 12.1151 29.585 11.9844C29.4215 11.8537 29.2249 11.7743 29.0186 11.7559C28.8122 11.7374 28.6049 11.7802 28.4219 11.8799L22.1025 15.0283L16.9004 5.56055C16.8066 5.39054 16.6701 5.24878 16.5059 5.15039C16.3416 5.05207 16.1549 5 15.9648 5Z" fill="url(#ek-vip-b)" />
+        </g>
+        <defs>
+          <linearGradient id="ek-vip-a" x1="18.8102" y1="-12.7222" x2="2.88536" y2="39.1063" gradientUnits="userSpaceOnUse">
+            <stop stopColor="#FF6A4A" />
+            <stop offset="1" stopColor="#C70C00" />
+          </linearGradient>
+          <linearGradient id="ek-vip-b" x1="15.7467" y1="-4.75575" x2="16.321" y2="39.0672" gradientUnits="userSpaceOnUse">
+            <stop stopColor="#FFC900" />
+            <stop offset="0.99" stopColor="#FF9500" />
+          </linearGradient>
+          <clipPath id="ek-vip-clip"><rect width="32" height="32" fill="white" /></clipPath>
+        </defs>
       </svg>
     </span>
   );
 }
 
+/** The channel's kettlebell sub badge, vendored into public/badges. */
+function SubBadge() {
+  return (
+    <span className="inline-flex size-[1.35em] shrink-0 items-center" title="Subscriber">
+      <img className="size-full" alt="Subscriber" src="/badges/subscriber.png" draggable={false} />
+    </span>
+  );
+}
+
+/** Kick's moderator shield, used verbatim from the chatroom markup. */
 function ModBadge() {
   return (
-    <span
-      className="inline-flex size-[1.35em] shrink-0 items-center text-[var(--kick-green)]"
-      title="Moderator"
-    >
-      <ModerationIcon className="size-full" />
+    <span className="inline-flex size-[1.35em] shrink-0 items-center" title="Moderator">
+      <svg viewBox="0 0 32 32" fill="none" className="size-full" xmlns="http://www.w3.org/2000/svg">
+        <g clipPath="url(#ek-mod-clip)">
+          <path d="M30 0C31.1046 0 32 0.895431 32 2V30C32 31.1046 31.1046 32 30 32H2C0.895431 32 0 31.1046 0 30V2C0 0.895431 0.895431 0 2 0H30ZM16.2197 2.99316C15.8292 2.60266 15.1962 2.60265 14.8057 2.99316L8.36328 9.43555C7.97294 9.82608 7.97284 10.4591 8.36328 10.8496L10.0918 12.5781C10.4823 12.9686 11.1153 12.9685 11.5059 12.5781L11.585 12.499L13.9414 14.8564L3.57129 25.2275C2.70357 26.0954 2.7035 27.5023 3.57129 28.3701C4.43911 29.2376 5.84612 29.2377 6.71387 28.3701L17.084 17.999L19.4414 20.3564L19.3633 20.4346C18.9728 20.8251 18.9728 21.4581 19.3633 21.8486L21.0918 23.5771C21.4823 23.9676 22.1154 23.9676 22.5059 23.5771L28.9482 17.1348C29.3386 16.7443 29.3386 16.1112 28.9482 15.7207L27.2197 13.9922C26.8293 13.6017 26.1962 13.6018 25.8057 13.9922L25.7266 14.0703L23.3701 11.7139C24.2377 10.8461 24.2376 9.4391 23.3701 8.57129C22.5023 7.7035 21.0954 7.70357 20.2275 8.57129L17.8701 6.21387L17.9482 6.13574C18.3388 5.74522 18.3388 5.11221 17.9482 4.72168L16.2197 2.99316Z" fill="url(#ek-mod-a)" />
+          <path d="M30 0C31.1046 0 32 0.895431 32 2V30C32 31.1046 31.1046 32 30 32H2C0.895431 32 0 31.1046 0 30V2C0 0.895431 0.895431 0 2 0H30ZM16.2197 2.99316C15.8292 2.60266 15.1962 2.60265 14.8057 2.99316L8.36328 9.43555C7.97294 9.82608 7.97284 10.4591 8.36328 10.8496L10.0918 12.5781C10.4823 12.9686 11.1153 12.9685 11.5059 12.5781L11.585 12.499L13.9414 14.8564L3.57129 25.2275C2.70357 26.0954 2.7035 27.5023 3.57129 28.3701C4.43911 29.2376 5.84612 29.2377 6.71387 28.3701L17.084 17.999L19.4414 20.3564L19.3633 20.4346C18.9728 20.8251 18.9728 21.4581 19.3633 21.8486L21.0918 23.5771C21.4823 23.9676 22.1154 23.9676 22.5059 23.5771L28.9482 17.1348C29.3386 16.7443 29.3386 16.1112 28.9482 15.7207L27.2197 13.9922C26.8293 13.6017 26.1962 13.6018 25.8057 13.9922L25.7266 14.0703L23.3701 11.7139C24.2377 10.8461 24.2376 9.4391 23.3701 8.57129C22.5023 7.7035 21.0954 7.70357 20.2275 8.57129L17.8701 6.21387L17.9482 6.13574C18.3388 5.74522 18.3388 5.11221 17.9482 4.72168L16.2197 2.99316Z" fill="url(#ek-mod-b)" />
+          <path d="M30 0C31.1046 0 32 0.895431 32 2V30C32 31.1046 31.1046 32 30 32H2C0.895431 32 0 31.1046 0 30V2C0 0.895431 0.895431 0 2 0H30ZM16.2197 2.99316C15.8292 2.60266 15.1962 2.60265 14.8057 2.99316L8.36328 9.43555C7.97294 9.82608 7.97284 10.4591 8.36328 10.8496L10.0918 12.5781C10.4823 12.9686 11.1153 12.9685 11.5059 12.5781L11.585 12.499L13.9414 14.8564L3.57129 25.2275C2.70357 26.0954 2.7035 27.5023 3.57129 28.3701C4.43911 29.2376 5.84612 29.2377 6.71387 28.3701L17.084 17.999L19.4414 20.3564L19.3633 20.4346C18.9728 20.8251 18.9728 21.4581 19.3633 21.8486L21.0918 23.5771C21.4823 23.9676 22.1154 23.9676 22.5059 23.5771L28.9482 17.1348C29.3386 16.7443 29.3386 16.1112 28.9482 15.7207L27.2197 13.9922C26.8293 13.6017 26.1962 13.6018 25.8057 13.9922L25.7266 14.0703L23.3701 11.7139C24.2377 10.8461 24.2376 9.4391 23.3701 8.57129C22.5023 7.7035 21.0954 7.70357 20.2275 8.57129L17.8701 6.21387L17.9482 6.13574C18.3388 5.74522 18.3388 5.11221 17.9482 4.72168L16.2197 2.99316Z" fill="url(#ek-mod-c)" />
+        </g>
+        <defs>
+          <linearGradient id="ek-mod-a" x1="18.8102" y1="-12.7222" x2="2.88536" y2="39.1063" gradientUnits="userSpaceOnUse">
+            <stop stopColor="#FF6A4A" />
+            <stop offset="1" stopColor="#C70C00" />
+          </linearGradient>
+          <linearGradient id="ek-mod-b" x1="15.7467" y1="-4.75575" x2="16.321" y2="39.0672" gradientUnits="userSpaceOnUse">
+            <stop stopColor="#FFC900" />
+            <stop offset="0.99" stopColor="#FF9500" />
+          </linearGradient>
+          <linearGradient id="ek-mod-c" x1="-14.9543" y1="46.9544" x2="32.0001" y2="-0.000509222" gradientUnits="userSpaceOnUse">
+            <stop stopColor="#0095FF" />
+            <stop offset="0.99" stopColor="#00C7FF" />
+          </linearGradient>
+          <clipPath id="ek-mod-clip"><rect width="32" height="32" fill="white" /></clipPath>
+        </defs>
+      </svg>
     </span>
   );
 }
@@ -213,14 +302,23 @@ function Row({ m, isBot }: { m: ChatFrame; isBot: boolean }) {
     );
   }
 
+  // Badge order mirrors Kick: role, then sub, then level.
+  const { level, role, sub } = identity(m.username);
+  const isMod = m.is_mod || role === 'mod';
+  const isVip = role === 'vip' && !isMod;
+  const isSub = m.is_sub || sub;
+  const hasBadge = isMod || isVip || isSub || level !== null;
+
   return (
     <div className="group relative px-2 lg:px-3">
       <div className="w-full min-w-0 break-words rounded-lg px-2 py-[4px] text-[14px] transition-colors group-hover:bg-white/[0.04]">
         <span className="inline-flex min-w-0 flex-nowrap items-baseline">
-          {(m.is_sub || m.is_mod) && (
+          {hasBadge && (
             <span className="flex items-center gap-1 self-center pr-1">
-              {m.is_mod && <ModBadge />}
-              {m.is_sub && <SubBadge />}
+              {isMod && <ModBadge />}
+              {isVip && <VipBadge />}
+              {isSub && <SubBadge />}
+              {level !== null && <LevelBadge level={level} />}
             </span>
           )}
           <span className="inline font-bold" style={{ color: `hsl(${hue(m.username)} 72% 64%)` }}>

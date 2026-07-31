@@ -1,6 +1,14 @@
 import random
 
-from easy_kick.bandit import DECAY, MIN_PULLS, PRIOR, Bandit, ReactivePolicy, TimerPolicy
+from easy_kick.bandit import (
+    DECAY,
+    MIN_NOTHING_PROBABILITY,
+    MIN_PULLS,
+    PRIOR,
+    Bandit,
+    ReactivePolicy,
+    TimerPolicy,
+)
 from easy_kick.models import Arm, ChatState
 
 TOY = {Arm.EMOTE_RALLY: 0.8, Arm.CHAT_POLL: 0.5, Arm.NOTHING: 0.3}
@@ -65,6 +73,26 @@ def test_propensity_is_a_probability_over_the_arms():
 
     assert 0.0 <= decision.propensity <= 1.0
     assert decision.arm in bandit.arms
+
+
+def test_selection_and_propensity_use_only_the_eligible_arms():
+    bandit = Bandit(seed=0)
+    eligible = (Arm.NOTHING, Arm.CHAT_POLL)
+
+    decision = bandit.select(ChatState.STEADY, eligible)
+
+    assert decision.eligible == eligible
+    assert set(decision.samples) == set(eligible)
+    assert decision.arm in eligible
+
+
+def test_nothing_keeps_an_explicit_minimum_allocation():
+    bandit = Bandit(seed=0)
+    eligible = (Arm.NOTHING, Arm.CHAT_POLL)
+
+    propensity = bandit._propensity(ChatState.STEADY, Arm.NOTHING, eligible)
+
+    assert propensity >= MIN_NOTHING_PROBABILITY
 
 
 def test_a_warm_start_restores_a_previous_run():

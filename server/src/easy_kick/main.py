@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from .config import Settings, get_settings
 from .context import poll_channel
 from .controller import build_stack
+from .controller_history import ControllerHistory
 from .hub import EventHub
 from .kick_api import KickClient, NotAuthorizedError
 from .oauth import TokenStore
@@ -57,6 +58,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="easy-kick backend", lifespan=_lifespan)
     app.state.settings = settings
     app.state.hub = EventHub()
+    app.state.controller_history = ControllerHistory()
     app.state.tokens = TokenStore()
     app.state.verifier = SignatureVerifier()
     app.state.http = httpx.AsyncClient(timeout=15.0)
@@ -65,7 +67,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Content-Type", "X-Control-Key"],
     )
     app.add_exception_handler(NotAuthorizedError, _not_authorized_handler)
     app.add_exception_handler(httpx.HTTPStatusError, _upstream_error_handler)

@@ -26,12 +26,14 @@ class StreamContext:
     category: str | None = None
     stream_title: str | None = None
     started_at: float | None = None
+    is_live: bool | None = None
     speaking: bool = False  # set by an optional audio provider; absent means no gate
     category_changed_at: float | None = None
 
     def apply(self, channel: dict, now: float) -> None:
         """Fold one `GET /channels` row in, noting a category change as a regime change."""
         stream = channel.get("stream") or {}
+        self.is_live = bool(channel.get("is_live", stream))
         category = (channel.get("category") or {}).get("name")
         if category and self.category and category != self.category:
             self.category_changed_at = now
@@ -64,6 +66,7 @@ class StreamContext:
             "actions_per_min": actions_per_min,
             "uptime_s": self.uptime_s(now),
             "streamer_speaking": self.speaking,
+            "is_live": self.is_live,
         }
 
 
@@ -76,6 +79,8 @@ async def poll_channel(kick, context: StreamContext, broadcaster_user_id: int | 
             channels = await kick.get_channels(broadcaster_user_id)
             if channels:
                 context.apply(channels[0], time.time())
+            else:
+                context.is_live = False
         except Exception:
             logger.warning("channel poll failed; viewer count unknown", exc_info=True)
             context.viewer_count = None

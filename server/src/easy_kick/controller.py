@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 from .bandit import MIN_PULLS, Bandit, Decision
 from .context import StreamContext
+from .controller_history import ControllerHistory
 from .engagement import BOT_NAME, EngagementMonitor
 from .hub import EventHub
 from .models import (
@@ -28,17 +29,21 @@ from .models import (
     EventEnvelope,
     EventType,
     Mode,
+    TrialOrigin,
 )
-from .reward import Outcome, RewardBook, Window
+from .reward import CONTAMINATION_S, Outcome, RewardBook, Window
 from .store import EventStore
 
 logger = logging.getLogger("kick.controller")
 
 TICK_S = 5.0
-COOLDOWN_S = 90.0  # one open window at a time, and a quiet gap after every fire
+# The tick is added because decisions only happen on the 5s grid: landing exactly on the
+# boundary would leave it to float comparison.
+COOLDOWN_S = CONTAMINATION_S + TICK_S
 ARM_CAP_PER_HOUR = 4
 PROMOTE_AFTER_APPROVALS = 5
 SCAN_LIMIT = 200  # how far back the copy helpers look for a question or a new chatter
+SUGGESTION_TTL_S = 60.0
 
 DEFAULT_AUTONOMY = {
     Arm.NOTHING: Autonomy.AUTO,
@@ -58,6 +63,18 @@ class Card:
     title: str
     body: str
     options: list[str]
+
+
+@dataclass
+class PendingAction:
+    """A chosen action that has not successfully reached chat yet."""
+
+    id: str
+    decision: Decision
+    card: Card
+    origin: TrialOrigin
+    awaiting_approval: bool
+    expires_at: float
 
 
 TEMPLATES = {
@@ -89,7 +106,9 @@ class Controller:
         context: StreamContext,
         store: EventStore,
         publish: Callable[[str, dict], None],
-        perform: Callable[[Arm, ChatState, Card], None] | None = None,
+        perform: Callable[[str, Arm, ChatState, Card], bool] | None = None,
+        require_live: bool = False,
+        warmup_s: float = 0.0,
     ):
         self._monitor = monitor
         self._bandit = bandit
@@ -97,7 +116,9 @@ class Controller:
         self._context = context
         self._store = store
         self._publish = publish
-        self.perform = perform  # how an arm actually reaches chat; None means card-only
+        self.perform = perform
+        self._require_live = require_live
+        self._warmup_s = warmup_s
 
         self.enabled = True  # kill switch
         self.autonomy = dict(DEFAULT_AUTONOMY)
@@ -109,16 +130,18 @@ class Controller:
         # `fire_rate` is ignored entirely and Thompson sampling runs as normal — no blending.
         self.mode = Mode.AUTO
         self.fire_rate: dict[Arm, float] = {}
-        self._manual_windows: set[str] = set()
 
+        self._pending: PendingAction | None = None
         self._window: Window | None = None
         self._card: Card | None = None
-        self._awaiting_approval = False
         self._fires: deque[tuple[float, Arm]] = deque()
+        self._seen_category_change: float | None = None
 
     def tick(self, now: float) -> None:
         """One cycle. Safe to call at any cadence; nothing here sleeps or awaits."""
         self._close_due(now)
+        self._expire_pending(now)
+        self._reset_changed_regime()
         metrics = self._monitor.measure(now)
         state = self._monitor.classify(metrics)
         self._publish(
@@ -138,7 +161,13 @@ class Controller:
                 "controller.poll", self._poll_frame(self._window, self._card, now)
             )
 
-        if not self.enabled or self._window or self._railed(now):
+        if (
+            not self.enabled
+            or self._pending
+            or self._window
+            or self._railed(now)
+            or not self._ready(now)
+        ):
             return
         # Bandit-adjacent: `chat_digest` never touches chat and is never scored, so it isn't
         # one of the arms Thompson sampling competes over — but it still shares the cooldown
@@ -153,29 +182,28 @@ class Controller:
         if self.mode is Mode.MANUAL:
             self._manual_tick(state, metrics, now)
             return
+        eligible = self._eligible_arms(now)
+        if not eligible or eligible == (Arm.NOTHING,):
+            return
         try:
-            decision = self._bandit.select(state)
+            decision = self._bandit.select(state, eligible)
         except Exception:
             # The bandit is a chooser, never a dependency. A degenerate cell must cost one
             # tick, not the loop.
             logger.warning("bandit.select failed; skipping tick", exc_info=True)
             return
-        if self.autonomy[decision.arm] is Autonomy.OFF or self._capped(
-            decision.arm, now
-        ):
-            return  # rail, not a decision
         self._act(decision, metrics, now)
 
     def approve(self, action_id: str, now: float) -> bool:
-        """Streamer sent a suggested card. The arm fires now and the window runs on."""
-        if not (
-            self._awaiting_approval and self._window and self._window.id == action_id
-        ):
+        """Begin delivery. The measured window starts only after delivery succeeds."""
+        pending = self._pending
+        if not (pending and pending.awaiting_approval and pending.id == action_id):
             return False
-        self._awaiting_approval = False
-        self.approvals[self._window.arm] += 1
-        self._window.fired = True
-        self._do_fire(self._window.arm, self._window.state, self._card, now)
+        pending.awaiting_approval = False
+        if pending.origin is TrialOrigin.AUTONOMOUS:
+            pending.origin = TrialOrigin.APPROVED
+        self.approvals[pending.decision.arm] += 1
+        self._deliver(pending, now)
         return True
 
     def dismiss(self, action_id: str) -> bool:
@@ -185,14 +213,43 @@ class Controller:
         it — the arm never fired. Folding it into the arm's posterior is missing-not-at-
         random, so it goes to a separate counter and the window is voided.
         """
-        if not (
-            self._awaiting_approval and self._window and self._window.id == action_id
-        ):
+        pending = self._pending
+        if not (pending and pending.awaiting_approval and pending.id == action_id):
             return False
-        window = self._window
-        self._window, self._card, self._awaiting_approval = None, None, False
-        self.vetoes[window.state, window.arm] += 1
-        self._publish("controller.result", _result(window, None, "dismissed"))
+        self._pending = None
+        self.vetoes[pending.decision.state, pending.decision.arm] += 1
+        self._publish("controller.result", _pending_result(pending, "dismissed"))
+        return True
+
+    def delivery_succeeded(self, action_id: str, now: float) -> bool:
+        """Activate a full treatment window after the action reached chat."""
+        pending = self._pending
+        if not (pending and not pending.awaiting_approval and pending.id == action_id):
+            return False
+        # Check contamination against the previous fire, never the one being opened now.
+        self._window = self._rewards.open(
+            pending.id,
+            pending.decision.state,
+            pending.decision.arm,
+            now,
+            fired=True,
+            origin=pending.origin,
+        )
+        self._card = pending.card
+        self._pending = None
+        self._fires.append((now, self._window.arm))
+        self._rewards.note_fire(now)
+        return True
+
+    def delivery_failed(self, action_id: str, reason: str = "send failed") -> bool:
+        """Close a chosen action without pretending it became a treatment."""
+        pending = self._pending
+        if not (pending and not pending.awaiting_approval and pending.id == action_id):
+            return False
+        self._pending = None
+        self._publish(
+            "controller.result", _pending_result(pending, "send_failed", reason)
+        )
         return True
 
     def policy(self) -> dict:
@@ -236,8 +293,43 @@ class Controller:
             self._fires.popleft()
         return sum(a == arm for _, a in self._fires) >= ARM_CAP_PER_HOUR
 
+    def _eligible_arms(self, now: float) -> tuple[Arm, ...]:
+        """The exact choice set Thompson sampling and propensity logging both see."""
+        return tuple(
+            arm
+            for arm in getattr(self._bandit, "arms", BANDIT_ARMS)
+            if (
+                arm is Arm.NOTHING
+                or self.autonomy.get(arm, Autonomy.OFF) is not Autonomy.OFF
+            )
+            and not self._capped(arm, now)
+        )
+
+    def _ready(self, now: float) -> bool:
+        if self._require_live and self._context.is_live is not True:
+            return False
+        if not self._warmup_s:
+            return True
+        return (
+            self._context.started_at is not None
+            and self._context.uptime_s(now) >= self._warmup_s
+        )
+
+    def _reset_changed_regime(self) -> None:
+        changed_at = self._context.category_changed_at
+        if changed_at is None or changed_at == self._seen_category_change:
+            return
+        self._seen_category_change = changed_at
+        self._monitor.reset_baseline()
+        self._rewards.reset_regime()
+
     def _act(
-        self, decision: Decision, metrics, now: float, *, manual: bool = False
+        self,
+        decision: Decision,
+        metrics,
+        now: float,
+        *,
+        origin: TrialOrigin = TrialOrigin.AUTONOMOUS,
     ) -> None:
         arm, state = decision.arm, decision.state
         window_id = uuid.uuid4().hex[:12]
@@ -245,21 +337,28 @@ class Controller:
         # `nothing` has no card and says nothing, but it still opens a window. Otherwise its
         # posterior never updates and the arm can never win — which is the whole reason the
         # bot stays quiet by default.
-        self._card = None if arm is Arm.NOTHING else compose(arm)
-        self._awaiting_approval = self._card is not None and autonomy is Autonomy.ASK
-        fires_now = self._card is not None and not self._awaiting_approval
-
-        if fires_now:
-            self._do_fire(arm, state, self._card, now)
-        if self._card:
+        card = None if arm is Arm.NOTHING else compose(arm)
+        if card:
+            pending = PendingAction(
+                id=window_id,
+                decision=decision,
+                card=card,
+                origin=origin,
+                awaiting_approval=autonomy is Autonomy.ASK,
+                expires_at=now + SUGGESTION_TTL_S,
+            )
+            self._pending = pending
             self._publish(
                 "controller.action",
-                _action(window_id, decision, self._card, metrics, now, autonomy),
+                _action(window_id, decision, card, metrics, now, autonomy),
             )
-
-        self._window = self._rewards.open(window_id, state, arm, now, fired=fires_now)
-        if manual:
-            self._manual_windows.add(window_id)
+            if not pending.awaiting_approval:
+                self._deliver(pending, now)
+        else:
+            self._window = self._rewards.open(
+                window_id, state, arm, now, fired=False, origin=origin
+            )
+            self._card = None
         self._publish(
             "controller.bandit",
             {
@@ -269,6 +368,29 @@ class Controller:
                 "last_decision": decision.frame(),
             },
         )
+
+    def _deliver(self, pending: PendingAction, now: float) -> None:
+        """Start delivery; synchronous adapters confirm immediately, live ones callback."""
+        if self.perform is None:
+            self.delivery_failed(pending.id, "no delivery adapter configured")
+            return
+        try:
+            sent = self.perform(
+                pending.id, pending.decision.arm, pending.decision.state, pending.card
+            )
+        except Exception:
+            logger.warning("action delivery failed", exc_info=True)
+            self.delivery_failed(pending.id)
+            return
+        if sent:
+            self.delivery_succeeded(pending.id, now)
+
+    def _expire_pending(self, now: float) -> None:
+        pending = self._pending
+        if not (pending and pending.awaiting_approval and now >= pending.expires_at):
+            return
+        self._pending = None
+        self._publish("controller.result", _pending_result(pending, "railed"))
 
     def _fire_chance(self, arm: Arm) -> float:
         """Slider rate (fires/minute) turned into a per-tick firing probability."""
@@ -289,7 +411,10 @@ class Controller:
             return
         arm = random.choice(eligible)
         self._act(
-            Decision(state, arm, {}, self._fire_chance(arm)), metrics, now, manual=True
+            Decision(state, arm, {}, self._fire_chance(arm), tuple(eligible)),
+            metrics,
+            now,
+            origin=TrialOrigin.MANUAL,
         )
 
     def _fire_digest(self, highlight: tuple[str, str], now: float) -> None:
@@ -299,30 +424,17 @@ class Controller:
         card = Card("Chat digest", f"@{who}: {text}", [])
         self._publish("controller.digest", _digest(card, highlight, now))
 
-    def _do_fire(
-        self, arm: Arm, state: ChatState, card: Card | None, now: float
-    ) -> None:
-        self._fires.append((now, arm))
-        self._rewards.note_fire(now)
-        if self.perform and card:
-            self.perform(arm, state, card)
-
     def _close_due(self, now: float) -> None:
         window, card = self._window, self._card
         if window is None or now < window.closes_at:
             return
         self._window = self._card = None
-        manual = window.id in self._manual_windows
-        self._manual_windows.discard(window.id)
-
-        if self._awaiting_approval:
-            # Nobody answered the card. No fire, no signal, no update.
-            self._awaiting_approval = False
-            self._publish("controller.result", _result(window, None, "railed"))
-            return
 
         outcome = self._rewards.close(window, now)
-        if not manual:
+        if (
+            window.origin is TrialOrigin.AUTONOMOUS
+            and outcome.contaminated is None
+        ):
             self._bandit.update(window.state, window.arm, outcome.reward)
         self._publish(
             "controller.result",
@@ -424,28 +536,37 @@ def insights(bandit) -> list[str]:
     return lines
 
 
-def hub_publisher(hub: EventHub) -> Callable[[str, dict], None]:
+def hub_publisher(
+    hub: EventHub,
+    history: ControllerHistory,
+) -> Callable[[str, dict], None]:
     """Controller frames ride the existing `/stream` as envelopes with synthetic types.
 
-    They are published, never stored: `engagement.py` reads the store, and our own output
-    is not chat.
+    They are kept in a separate bounded history, never the engagement `EventStore`, so our
+    own output cannot become audience activity.
     """
 
     def publish(event_type: str, payload: dict) -> None:
+        frame = history.record(payload)
         hub.publish(
             EventEnvelope(
                 type=event_type,
                 version="1",
                 message_id=uuid.uuid4().hex,
                 timestamp=_iso(time.time()),
-                payload=payload,
+                payload=frame,
             )
         )
 
     return publish
 
 
-def build_stack(app, settings, *, perform: Callable[[Arm, ChatState, Card], None] | None = None) -> None:
+def build_stack(
+    app,
+    settings,
+    *,
+    perform: Callable[[str, Arm, ChatState, Card], bool] | None = None,
+) -> None:
     """Wire StreamContext -> EventStore -> Bandit -> EngagementMonitor -> Controller onto
     `app.state`. Used both at app startup and to reset everything the gym touches, so the two
     can't drift apart.
@@ -453,15 +574,28 @@ def build_stack(app, settings, *, perform: Callable[[Arm, ChatState, Card], None
     app.state.context = StreamContext()
     app.state.store = EventStore(maxlen=settings.buffer_size)
     app.state.bandit = Bandit()
-    app.state.monitor = EngagementMonitor(app.state.store, app.state.context)
+    app.state.monitor = EngagementMonitor(
+        app.state.store,
+        app.state.context,
+        bot_user_id=(
+            settings.bot_user_id
+            or (
+                str(settings.broadcaster_user_id)
+                if settings.broadcaster_user_id is not None
+                else None
+            )
+        ),
+    )
     app.state.controller = Controller(
         monitor=app.state.monitor,
         bandit=app.state.bandit,
         rewards=RewardBook(app.state.monitor),
         context=app.state.context,
         store=app.state.store,
-        publish=hub_publisher(app.state.hub),
+        publish=hub_publisher(app.state.hub, app.state.controller_history),
         perform=perform,
+        require_live=settings.controller_enabled,
+        warmup_s=settings.controller_warmup_s,
     )
 
 
@@ -497,7 +631,7 @@ def _action(
         "body": card.body,
         "options": card.options,
         "auto_fire": autonomy is Autonomy.AUTO,
-        "status": "suggested" if autonomy is Autonomy.ASK else "live",
+        "status": "suggested" if autonomy is Autonomy.ASK else "sending",
     }
 
 
@@ -524,6 +658,7 @@ def _result(
         "action_id": window.id,
         "state": window.state,
         "arm": window.arm,
+        "origin": window.origin,
         "votes": votes or {},
         "engagement_delta": outcome.lift if outcome else 0.0,
         "reward": outcome.reward if outcome else 0.0,
@@ -531,6 +666,26 @@ def _result(
         # Null when the window is attributable; a plain-words reason when it is not.
         "contaminated": outcome.contaminated if outcome else None,
         "controls": outcome.controls if outcome else 0,
+        "outcome": status,
+    }
+
+
+def _pending_result(
+    pending: PendingAction, status: str, reason: str | None = None
+) -> dict:
+    """A terminal action that never became a measured treatment."""
+    return {
+        "type": "result",
+        "action_id": pending.id,
+        "state": pending.decision.state,
+        "arm": pending.decision.arm,
+        "origin": pending.origin,
+        "votes": {},
+        "engagement_delta": 0.0,
+        "reward": 0.0,
+        "lift_naive": 0.0,
+        "contaminated": reason,
+        "controls": 0,
         "outcome": status,
     }
 

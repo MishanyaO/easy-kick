@@ -324,11 +324,12 @@ def simulate(*, seed: int, decisions: int, policy: str = "gambit", truth: bool =
             results.append({**payload, "lift_true": pending_truth if truth else None})
             pending_truth = 0.0 if truth else None
 
-    def fire(arm: Arm, state: ChatState, card) -> None:
+    def fire(action_id: str, arm: Arm, state: ChatState, card) -> bool:
         nonlocal pending_truth
         pending_truth = gym.true_effect(arm, state) if truth else None
         gym.say(card.body)
         gym.fire(arm, state, card.options)
+        return True
 
     controller = Controller(monitor=monitor, bandit=brain, rewards=RewardBook(monitor),
                         context=context, store=store, publish=publish, perform=fire)

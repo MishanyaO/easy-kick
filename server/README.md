@@ -84,8 +84,8 @@ appear on `/stream` and `/messages` identically. The dataset is
 ## Gambit — the controller
 
 A loop that reads chat state, picks an intervention (or nothing), waits 60s, measures the
-lift against a matched control, and updates a Beta posterior. Five arms × three chat states
-= fifteen posteriors, Thompson sampling, stdlib only.
+lift against a matched control, and updates a Beta posterior. Four bandit arms × three chat
+states = twelve posteriors, Thompson sampling, stdlib only.
 
 | Module | Job |
 |---|---|
@@ -110,7 +110,9 @@ uv run python -m easy_kick.eval.run_eval --worlds 12    # writes data/eval_resul
 
 Against live Kick traffic the loop is off by default. Set `KICK_CONTROLLER_ENABLED=true` and
 `KICK_BROADCASTER_USER_ID` to run it for real — it needs the `chat:write` and `channel:read`
-scopes. Only one clock may drive the loop, so leave it off when running the gym.
+scopes. Set `KICK_CONTROL_API_KEY` when the server is exposed through a tunnel; controller
+mutations then require the same value in the `X-Control-Key` header. Only one clock may drive
+the loop, so leave it off when running the gym.
 
 ## Endpoints
 

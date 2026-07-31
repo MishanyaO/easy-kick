@@ -1,8 +1,10 @@
 import base64
+import secrets
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
+from fastapi import Header, HTTPException, Request
 
 
 class SignatureVerifier:
@@ -28,3 +30,15 @@ class SignatureVerifier:
             return True
         except (InvalidSignature, ValueError):
             return False
+
+
+def require_control_key(
+    request: Request,
+    control_key: str | None = Header(default=None, alias="X-Control-Key"),
+) -> None:
+    """Protect public mutation routes when a control-plane key is configured."""
+    expected = request.app.state.settings.control_api_key
+    if expected and not (
+        control_key and secrets.compare_digest(control_key, expected)
+    ):
+        raise HTTPException(status_code=401, detail="invalid control key")

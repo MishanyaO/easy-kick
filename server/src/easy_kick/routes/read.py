@@ -29,7 +29,19 @@ def _frame(event: EventEnvelope) -> str | None:
 
 @router.get("/health")
 async def health(request: Request):
-    return {"status": "ok", **request.app.state.store.stats()}
+    app = request.app
+    settings = app.state.settings
+    return {
+        "status": "ok",
+        **app.state.store.stats(),
+        "readiness": {
+            "oauth_authorized": app.state.tokens.authorized,
+            "webhook_key_loaded": app.state.verifier.has_key,
+            "controller_enabled": settings.controller_enabled,
+            "control_routes_protected": bool(settings.control_api_key),
+            "channel_live": app.state.context.is_live,
+        },
+    }
 
 
 @router.get("/messages")
@@ -42,11 +54,18 @@ async def messages(request: Request, sender: str | None = None,
 
 async def _chat_sse(request: Request, backlog: int) -> AsyncIterator[str]:
     store, hub = request.app.state.store, request.app.state.hub
+    history = request.app.state.controller_history
     with hub.subscribe() as queue:
-        # Replay before streaming so a reconnecting client is not left with an empty panel.
-        # Subscribing first means anything arriving mid-replay queues up rather than being lost.
-        for ev in reversed(store.query(event_type=EventType.CHAT_MESSAGE_SENT, limit=backlog)):
+        # Capture both backlogs after subscribing. Anything published from here onward is
+        # queued, so hydration cannot leave a gap before live delivery begins.
+        chat_backlog = reversed(
+            store.query(event_type=EventType.CHAT_MESSAGE_SENT, limit=backlog)
+        )
+        controller_backlog = history.snapshot()
+        for ev in chat_backlog:
             yield f"data: {ChatEventOut.from_envelope(ev).model_dump_json()}\n\n"
+        for frame in controller_backlog:
+            yield f"data: {json.dumps(frame)}\n\n"
         while True:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_S)
@@ -59,7 +78,7 @@ async def _chat_sse(request: Request, backlog: int) -> AsyncIterator[str]:
 
 @router.get("/stream")
 async def stream(request: Request, backlog: int = Query(50, ge=0, le=1000)):
-    """Live chat messages as Server-Sent Events, newest last."""
+    """Chat plus replayable controller frames as Server-Sent Events, newest last."""
     return StreamingResponse(
         _chat_sse(request, backlog),
         media_type="text/event-stream",

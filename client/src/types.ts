@@ -51,6 +51,7 @@ export type ContextFrame = {
   actions_per_min: number; // comments + reactions (redemptions, gifts) — same window
   uptime_s: number;
   streamer_speaking?: boolean;
+  is_live?: boolean | null;
 };
 
 export type ActionFrame = {
@@ -67,7 +68,7 @@ export type ActionFrame = {
   body: string; // the line that goes into chat
   options: string[];
   auto_fire: boolean;
-  status: 'suggested' | 'live' | 'closed' | 'dismissed';
+  status: 'suggested' | 'sending' | 'live' | 'closed' | 'dismissed';
   // contract v2 asks for expires_in_s — not on the wire yet
 };
 
@@ -77,6 +78,7 @@ export type ResultFrame = {
   action_id: string;
   state: ChatState;
   arm: Arm;
+  origin: 'autonomous' | 'approved' | 'manual';
   votes: Record<string, number>;
   engagement_delta: number; // matched-control lift, in participation points
   reward: number; // [0,1] after the logistic squash
@@ -86,7 +88,7 @@ export type ResultFrame = {
   contaminated: string | null;
   /** Clean same-state windows the matched control averaged. 0 means there was no control. */
   controls: number;
-  outcome: 'fired' | 'dismissed' | 'skipped' | 'railed';
+  outcome: 'fired' | 'dismissed' | 'skipped' | 'railed' | 'send_failed';
   // contract v2 asks for label / replies / held_s / raiders — not yet
 };
 
@@ -109,20 +111,50 @@ export type Posterior = {
   pulls: number;
 };
 
+/** One Thompson draw, as it happened. The samplers' numbers are the interesting part: the
+ *  policy is "roll one number out of each belief, play the highest", and a wide belief
+ *  rolls wild — which is the entire reason the thing explores at all. */
+export type LastDecision = {
+  state: ChatState;
+  /** One Beta draw per *eligible* arm — rails can take arms off the table, so this is a
+   *  partial record and code that indexes it must expect holes. */
+  samples: Partial<Record<Arm, number>>;
+  chosen: Arm;
+  propensity: number;
+  eligible?: Arm[];
+  /** The control was taken deliberately, not won. A fixed share of decisions are reserved
+   *  as clean quiet windows — without them there is nothing to measure a lift against. */
+  forced_control?: boolean;
+};
+
 export type BanditFrame = {
   type: 'bandit';
   decisions: number;
   posteriors: Posterior[];
-  last_decision?: {
-    state: ChatState;
-    samples: Record<Arm, number>;
-    chosen: Arm;
-    propensity: number;
-  };
+  last_decision?: LastDecision;
+};
+
+export type ControllerResetFrame = {
+  type: 'reset';
+};
+
+export type ControllerFrame = (
+  | ContextFrame
+  | ActionFrame
+  | ResultFrame
+  | BanditFrame
+  | PollFrame
+  | DigestFrame
+  | ControllerResetFrame
+) & {
+  /** Monotonic within one backend-owned gym/live session. */
+  seq: number;
+  session_id: string;
 };
 
 export type Frame =
-  | ChatFrame | ContextFrame | ActionFrame | ResultFrame | BanditFrame | PollFrame | DigestFrame;
+  | ChatFrame
+  | ControllerFrame;
 
 /** UI vocabulary derived from his numbers — the backend does not send these. */
 export type VerdictLabel = 'Worked' | 'Neutral' | 'Backfired' | "Can't tell";
@@ -159,6 +191,84 @@ export const VERDICT_COLOR: Record<VerdictLabel, string> = {
   Backfired: 'var(--danger)',
   "Can't tell": 'var(--warn)',
 };
+
+/** What the verdict means for the stream, said the way a streamer would say it. */
+export const VERDICT_BLURB: Record<VerdictLabel, string> = {
+  Worked: 'more of your viewers started talking',
+  Neutral: 'chat carried on much as it was',
+  Backfired: 'fewer of your viewers talked after it',
+  "Can't tell": 'this one cannot be read as an effect',
+};
+
+/**
+ * The product name for a tactic. `arm` is the wire name and it leaks — `emote_rally` in a
+ * ledger a streamer reads is us showing them our variable names.
+ */
+export const ARM_LABEL: Record<Arm, string> = {
+  nothing: 'Stayed quiet',
+  emote_rally: 'Emote rally',
+  chat_poll: 'Poll',
+  quiz: 'Quiz',
+  chat_digest: 'Chat digest',
+  prediction: 'Prediction',
+};
+
+/** What the tactic actually did in chat, for the expanded row. */
+export const ARM_BLURB: Record<Arm, string> = {
+  nothing: 'held back and let chat run on its own',
+  emote_rally: 'asked chat to spam an emote together',
+  chat_poll: 'put a question to chat and counted the replies',
+  quiz: 'asked chat something with a right answer',
+  chat_digest: 'summarised what chat was on about — for you, never posted',
+  prediction: 'opened a call for chat to back a side',
+};
+
+/** The chat state as a clause in a sentence, rather than a chip. */
+export const STATE_PHRASE: Record<ChatState, string> = {
+  lull: 'chat had gone quiet',
+  steady: 'chat was ticking along',
+  spike: 'chat was already going off',
+};
+
+/** Who decided to send it, in the streamer's terms. Short: it sits in a byline. */
+export const ORIGIN_LABEL: Record<ResultFrame['origin'], string> = {
+  autonomous: 'sent automatically',
+  approved: 'you approved it',
+  manual: 'you sent it',
+};
+
+/**
+ * A lift in participation points read back as people.
+ *
+ * Points are the right unit to compare windows in and the wrong unit to feel anything
+ * about: "+1.8 pts" and "about 17 more people talking" are the same fact, and only one of
+ * them is worth putting on a stream deck. Null when there is no viewer count to multiply
+ * by — inventing a denominator to get a friendlier sentence is the exact species of
+ * confident nonsense the rest of this UI refuses to print.
+ */
+export function peopleMoved(delta: number, viewers: number | null | undefined): string | null {
+  if (!viewers) return null;
+  const n = delta * viewers;
+  // Under half a person is not a result, and "0 more people talking" is a worse way of
+  // saying "nothing moved" than the verdict already does.
+  if (Math.abs(n) < 0.5) return null;
+  const c = Math.round(Math.abs(n));
+  return `about ${c} ${n > 0 ? 'more' : 'fewer'} ${c === 1 ? 'person' : 'people'} talking`;
+}
+
+/** The same conversion as `peopleMoved`, as a signed count for a dense ledger row. */
+export function peopleShort(delta: number, viewers: number | null | undefined): string | null {
+  if (!viewers) return null;
+  const n = delta * viewers;
+  if (Math.abs(n) < 0.5) return null;
+  return `≈ ${n > 0 ? '+' : '−'}${Math.round(Math.abs(n))} people`;
+}
+
+/** "Time Live" style elapsed clock — the gym's virtual second, not the wall clock. */
+export function clock(s: number): string {
+  const p = (n: number) => String(Math.floor(n)).padStart(2, '0');
+  return `${p(s / 3600)}:${p((s % 3600) / 60)}:${p(s % 60)}`;
+}
 
 /**
  * Why the bandit picked this arm, in a sentence.
@@ -201,6 +311,68 @@ export function whyThisArm(
   }
   return { mode: 'explore', text: `no evidence in a ${state} yet — this is the first read` };
 }
+
+/**
+ * Below this many pulls the sampler ignores a cell and draws the flat prior instead —
+ * mirrors `MIN_PULLS` in bandit.py. A cell under it has evidence but is not yet trusted,
+ * and showing its mean as if it were a finding is how a demo ends up claiming a result off
+ * a single window.
+ */
+export const MIN_PULLS = 3;
+
+/**
+ * How unsure a Beta(α, β) still is.
+ *
+ * The mean is what Gambit believes; this is how far that belief would move if the next
+ * window disagreed. It is the half of the picture a table of means drops, and the half
+ * that makes learning visible — the number shrinks as evidence lands.
+ */
+export const betaSd = (alpha: number, beta: number) =>
+  Math.sqrt((alpha * beta) / ((alpha + beta) ** 2 * (alpha + beta + 1)));
+
+/** One (state, arm) cell of the policy table. */
+export const cellKey = (state: ChatState, arm: Arm) => `${state}|${arm}`;
+
+/** Standard normal CDF — Abramowitz & Stegun 26.2.17, accurate to ~7e-8. */
+function phi(z: number): number {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const d = 0.3989422804014327 * Math.exp((-z * z) / 2);
+  const p = d * t * (0.319381530 + t * (-0.356563782 + t * (1.781477937
+    + t * (-1.821255978 + t * 1.330274429))));
+  return z > 0 ? 1 - p : p;
+}
+
+/**
+ * P(this tactic scores better than that one) — a real probability, unlike either posterior
+ * mean on its own.
+ *
+ * A Beta mean here is the expected value of the *reward*: a logistic squash of relative
+ * lift, minus the cost charged for interrupting. It is the number the sampler runs on and
+ * it is not readable — "0.62" answers no question anybody asked. What is readable is the
+ * comparison the table exists to make, and that comparison has an honest unit: how sure
+ * Gambit is that one arm beats another, given everything it has seen.
+ *
+ * Normal approximation rather than the exact Beta sum: with a handful of pulls the two
+ * agree to well under the precision anyone reads off a chart, and it stays exact where it
+ * matters most — two identical posteriors give exactly 0.5, so an untouched cell reads as
+ * the coin flip it is.
+ */
+export type Belief = { alpha: number; beta: number };
+
+export function pBeats(x: Belief, y: Belief): number {
+  const mx = x.alpha / (x.alpha + x.beta);
+  const my = y.alpha / (y.alpha + y.beta);
+  // Exact where it matters most, rather than the approximation's 0.4999999995: two
+  // untouched cells have to read as a dead-level coin flip and not as a hair's advantage.
+  if (mx === my) return 0.5;
+  const spread = Math.hypot(betaSd(x.alpha, x.beta), betaSd(y.alpha, y.beta));
+  if (spread < 1e-9) return Number(mx > my);
+  return phi((mx - my) / spread);
+}
+
+/** Above this Gambit is calling it; below the mirror of it, it is calling the other way.
+ *  In between is "too close to say", which the map has to be able to print. */
+export const SURE = 0.7;
 
 export const STATE_LABEL: Record<ChatState, string> = {
   lull: 'LULL',

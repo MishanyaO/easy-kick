@@ -1,8 +1,9 @@
 // One SSE subscription, one reducer, one state object for both surfaces.
 import { useEffect, useReducer, useRef } from 'react';
+import { cellKey } from './types';
 import type {
-  ActionFrame, Arm, Autonomy, BanditFrame, ChatFrame, ClosedPoll, ContextFrame, DigestFrame,
-  Frame, Mode, PollFrame, ResultFrame,
+  ActionFrame, Arm, Autonomy, BanditFrame, Belief, ChatFrame, ClosedPoll, ContextFrame,
+  DigestFrame, Frame, Mode, PollFrame, ResultFrame,
 } from './types';
 export type { ClosedPoll } from './types';
 
@@ -10,6 +11,9 @@ export type { ClosedPoll } from './types';
 export const BOT_NAME = 'gambit';
 
 export const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+const CONTROL_KEY = import.meta.env.VITE_CONTROL_API_KEY;
+const controlHeaders = (): Record<string, string> =>
+  CONTROL_KEY ? { 'X-Control-Key': CONTROL_KEY } : {};
 
 const MAX_CHAT = 80;
 const MAX_SPARK = 90;
@@ -46,12 +50,28 @@ export type GambitState = {
   pending: ActionFrame | null;
   /** actions that fired and are being measured, keyed by action id */
   inflight: Record<string, ActionFrame>;
+  /** every action frame seen this session, by id. `inflight` empties as windows close and
+   *  a skipped suggestion never enters it at all, so without this the ledger's own rows
+   *  cannot say what line they were — which is most of what a streamer opens one to read. */
+  seen: Record<string, ActionFrame>;
   /** every closed window, newest first */
   results: (ResultFrame & { action?: ActionFrame; tick: number })[];
   /** context frames received so far — lets a result be placed on the spark timeline
    *  it closed under, even after that spark's window has scrolled */
   tick: number;
   bandit: BanditFrame | null;
+  /** Every posterior after each bandit frame, keyed `state|arm`.
+   *
+   *  The backend sends a snapshot of the table and never a history, but "it learned" is a
+   *  claim about the *sequence* — beliefs that started identical and pulled apart as
+   *  evidence arrived. A still frame of the current table cannot make that claim, so the
+   *  client keeps the sequence it was streamed.
+   *
+   *  Raw α/β rather than a mean: the readable quantity is one belief compared against
+   *  another, which needs both distributions and not two summary numbers. Every cell is
+   *  appended on every frame, so trails are index-aligned and can be zipped. Cleared by
+   *  `reset` with everything else. */
+  banditTrail: Record<string, Belief[]>;
   /** the poll currently taking votes, if the open window has one */
   poll: PollFrame | null;
   /** the most recently closed poll/quiz's final split, if the streamer hasn't dismissed it
@@ -62,15 +82,31 @@ export type GambitState = {
 };
 
 const MAX_DIGESTS = 20;
+/** Comfortably more than the 200 results the ledger keeps, so every visible row can
+ *  still find its action. */
+const MAX_SEEN = 260;
 
 const EMPTY: GambitState = {
   connected: false, chat: [], context: null, spark: [], viewerSpark: [], activeViewersSpark: [],
   engagementSpark: [],
   actionsSpark: [], lastBot: null,
   viewerHistory: [], activeViewersHistory: [], actionsHistory: [], historyElapsedS: [],
-  pending: null, inflight: {}, results: [], bandit: null, poll: null, closedPoll: null,
-  digests: [], tick: 0,
+  pending: null, inflight: {}, seen: {}, results: [], bandit: null, banditTrail: {},
+  poll: null, closedPoll: null, digests: [], tick: 0,
 };
+
+/** Samples of each belief kept for the policy map. A bandit frame lands on every decision
+ *  and every window close, so this is a few hundred decisions' worth. */
+const MAX_TRAIL = 300;
+
+/** Insertion-ordered and bounded: string ids keep their insertion order in a JS object,
+ *  so dropping the oldest is a slice of the key list. */
+function remember(seen: Record<string, ActionFrame>, f: ActionFrame): Record<string, ActionFrame> {
+  const next = { ...seen, [f.id]: f };
+  const ids = Object.keys(next);
+  if (ids.length <= MAX_SEEN) return next;
+  return Object.fromEntries(ids.slice(ids.length - MAX_SEEN).map((id) => [id, next[id]]));
+}
 
 type Msg =
   | { kind: 'frame'; frame: Frame }
@@ -134,8 +170,8 @@ function reduce(s: GambitState, m: Msg): GambitState {
     case 'action':
       // auto_fire actions never wait for the streamer; they go straight to measuring
       return f.auto_fire
-        ? { ...s, inflight: { ...s.inflight, [f.id]: f } }
-        : { ...s, pending: f };
+        ? { ...s, seen: remember(s.seen, f), inflight: { ...s.inflight, [f.id]: f } }
+        : { ...s, seen: remember(s.seen, f), pending: f };
 
     // The running tally of the open poll. Republished every tick, so it is a replace,
     // never an accumulate — the backend owns the dedupe and we must not re-add on top of it.
@@ -144,9 +180,14 @@ function reduce(s: GambitState, m: Msg): GambitState {
 
     case 'result': {
       // A rail-forced no-op is NOT a decision (his §6): no posterior update, no lift, and
-      // it must not appear in the ledger or it drowns the real windows.
-      if (f.outcome === 'railed') return s;
-      const action = s.inflight[f.action_id];
+      // it must not appear in the ledger or it drowns the real windows. It can still close
+      // an expired suggestion, so remove that card instead of leaving a stale action whose
+      // approval endpoint will correctly return 404.
+      if (f.outcome === 'railed') {
+        if (s.pending?.id !== f.action_id) return s;
+        return { ...s, pending: null };
+      }
+      const action = s.inflight[f.action_id] ?? s.seen[f.action_id];
       const rest = Object.fromEntries(
         Object.entries(s.inflight).filter(([id]) => id !== f.action_id),
       );
@@ -172,8 +213,23 @@ function reduce(s: GambitState, m: Msg): GambitState {
       };
     }
 
-    case 'bandit':
-      return { ...s, bandit: f };
+    case 'bandit': {
+      const banditTrail = { ...s.banditTrail };
+      for (const p of f.posteriors) {
+        const prev = banditTrail[cellKey(p.state, p.arm)] ?? [];
+        const next = [...prev, { alpha: p.alpha, beta: p.beta }];
+        banditTrail[cellKey(p.state, p.arm)] =
+          next.length > MAX_TRAIL ? next.slice(next.length - MAX_TRAIL) : next;
+      }
+      return {
+        ...s,
+        // Only the frame published at a decision carries `last_decision`; the one at window
+        // close does not. Replacing wholesale would blank the draw a second after it
+        // happened, which is precisely the moment worth looking at.
+        bandit: f.last_decision ? f : { ...f, last_decision: s.bandit?.last_decision },
+        banditTrail,
+      };
+    }
 
     case 'digest':
       return { ...s, digests: [f, ...s.digests].slice(0, MAX_DIGESTS) };
@@ -186,16 +242,38 @@ function reduce(s: GambitState, m: Msg): GambitState {
 export function useGambit() {
   const [state, dispatch] = useReducer(reduce, EMPTY);
   const stateRef = useRef(state);
+  const sessionRef = useRef<string | null>(null);
+  const sequenceRef = useRef(0);
   stateRef.current = state;
 
   useEffect(() => {
-    // Replay recent chat on connect so the panel is never blank on a refresh mid-stream.
+    // The server replays recent chat plus this session's controller history on connect.
     const src = new EventSource(`${API_BASE}/stream?backlog=${BACKLOG}`);
     src.onopen = () => dispatch({ kind: 'open' });
     src.onerror = () => dispatch({ kind: 'close' });
     src.onmessage = (e) => {
       try {
-        dispatch({ kind: 'frame', frame: JSON.parse(e.data) as Frame });
+        const frame = JSON.parse(e.data) as Frame;
+        if (frame.type === 'chat') {
+          dispatch({ kind: 'frame', frame });
+          return;
+        }
+
+        const previousSession = sessionRef.current;
+        const sessionChanged = previousSession !== frame.session_id;
+        if (sessionChanged) {
+          sessionRef.current = frame.session_id;
+          sequenceRef.current = 0;
+        }
+        if (frame.seq <= sequenceRef.current) return;
+        sequenceRef.current = frame.seq;
+
+        // Reset reaches open tabs. A changed session also clears a client whose reset
+        // frame fell out of the bounded history before it reconnected.
+        if (frame.type === 'reset' || (previousSession !== null && sessionChanged)) {
+          dispatch({ kind: 'reset' });
+        }
+        if (frame.type !== 'reset') dispatch({ kind: 'frame', frame });
       } catch {
         // a malformed frame must not tear down the stream
       }
@@ -206,7 +284,10 @@ export function useGambit() {
   /** Approve or veto a pending suggestion. Optimistic: the backend confirms via a result. */
   const decide = async (id: string, verdict: 'send' | 'dismiss') => {
     dispatch(verdict === 'send' ? { kind: 'approve', id } : { kind: 'dismiss', id });
-    await fetch(`${API_BASE}/controller/action/${id}/${verdict}`, { method: 'POST' })
+    await fetch(`${API_BASE}/controller/action/${id}/${verdict}`, {
+      method: 'POST',
+      headers: controlHeaders(),
+    })
       .catch(() => undefined);
   };
 
@@ -251,7 +332,7 @@ export const controller = {
   }) =>
     fetch(`${API_BASE}/controller/autonomy`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...controlHeaders() },
       body: JSON.stringify(body),
     }).then((r) => r.json()),
 };

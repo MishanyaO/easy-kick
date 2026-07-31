@@ -201,7 +201,7 @@ export default function InsightsGraph({
                 <span key={r.action_id}
                   onMouseEnter={() => setHover(index)}
                   onMouseLeave={() => setHover(null)}
-                  className="absolute bottom-0 block -translate-x-1/2 cursor-pointer rounded-[1px] transition-all"
+                  className="absolute bottom-0 block -translate-x-1/2 cursor-pointer rounded-[1px] transition-[width,height,opacity]"
                   style={{
                     left: `${(index / (len - 1)) * 100}%`,
                     width: on ? 9 : 5,

@@ -1,4 +1,5 @@
 import { ExternalLink } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import Panel, { PanelButton } from './Panel';
 import { StreamIcon } from './icons';
 import type { ContextFrame } from '../types';
@@ -24,20 +25,46 @@ const ACTIVE_VIEWERS_COLOR = 'var(--kick-green)';
 export default function SessionInfo({
   context,
   live,
+  speed = 1,
   viewerSpark,
   activeViewersSpark,
   actionsSpark,
 }: {
   context: ContextFrame | null;
   live: boolean;
+  /** Gym virtual-seconds-per-real-second, so the clock can keep ticking between frames. */
+  speed?: number;
   viewerSpark: GambitState['viewerSpark'];
   activeViewersSpark: GambitState['activeViewersSpark'];
   actionsSpark: GambitState['actionsSpark'];
 }) {
+  // Context frames land every few real seconds; interpolating locally between them is
+  // what makes "Time Live" look live instead of stepping in visible jumps.
+  const anchor = useRef<{ uptime_s: number; atMs: number } | null>(null);
+  const [, forceTick] = useState(0);
+
+  if (!context) {
+    // A stop clears the context, and the clock has to go with it — an interpolated
+    // value would otherwise sit there frozen at whatever the last frame said.
+    anchor.current = null;
+  } else if (anchor.current?.uptime_s !== context.uptime_s) {
+    anchor.current = { uptime_s: context.uptime_s, atMs: Date.now() };
+  }
+
+  useEffect(() => {
+    if (!live) return;
+    const id = setInterval(() => forceTick((n) => n + 1), 250);
+    return () => clearInterval(id);
+  }, [live]);
+
+  const displayUptime = anchor.current
+    ? anchor.current.uptime_s + ((Date.now() - anchor.current.atMs) / 1000) * speed
+    : null;
+
   const cells: [string, string][] = [
     ['Session', live ? 'LIVE' : 'OFFLINE'],
     ['Category', context?.category ?? '-'],
-    ['Time Live', context ? elapsed(context.uptime_s) : '-'],
+    ['Time Live', displayUptime != null ? elapsed(displayUptime) : '-'],
   ];
 
   return (

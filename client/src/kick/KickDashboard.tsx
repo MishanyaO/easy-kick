@@ -74,6 +74,7 @@ export default function KickDashboard() {
               <SessionInfo
                 context={s.context}
                 live={gymStatus === 'running'}
+                speed={gymSpeed}
                 viewerSpark={s.viewerSpark}
                 activeViewersSpark={s.activeViewersSpark}
                 actionsSpark={s.actionsSpark}

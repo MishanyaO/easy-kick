@@ -6,17 +6,17 @@ a React dashboard (`client/`).
 ## Setup (once)
 
 ```bash
-npm install
-cd client && npm install && cd ..
+pnpm install
 cd server && uv sync && cp .env.example .env && cd ..
 ```
 
-Needs Node 18+, Python 3.11+, and [uv](https://docs.astral.sh/uv/).
+`pnpm install` installs the root and `client` workspace in one pass. Needs Node 24+,
+[pnpm](https://pnpm.io/) 11+, Python 3.11+, and [uv](https://docs.astral.sh/uv/).
 
 ## Simulator mode — no Kick account needed (in root directory)
 
 ```bash
-npm run dev:simulator
+pnpm dev:simulator
 ```
 
 Open [http://localhost:5173](http://localhost:5173) and hit **Start gym**. A simulated
@@ -41,7 +41,7 @@ and chat write. Put the client ID, secret, both URLs, broadcaster ID, and a
 `VITE_CONTROL_API_KEY`.
 
 ```bash
-npm run dev
+pnpm dev
 ```
 
 Then authorize once — open `<ngrok-url>/auth/login`, approve, and:
@@ -60,7 +60,7 @@ in-memory, so repeat this step after a backend restart.
 
 ---
 
-`npm test` runs the backend suite. See [server/README.md](server/README.md) for endpoints,
+`pnpm test` runs the backend suite. See [server/README.md](server/README.md) for endpoints,
 config, and the simulator API.
 
 The loop is: read chat state → pick an intervention (or deliberately pick nothing) → wait

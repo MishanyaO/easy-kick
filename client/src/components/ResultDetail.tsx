@@ -6,7 +6,7 @@
 // mid-stream, so every sentence it holds has to earn its line; the reasoning that used to
 // live here in prose is now a tooltip, and the engineer's numbers are behind a disclosure.
 import { useState } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, MonitorPlay } from 'lucide-react';
 import {
   ARM_LABEL, ORIGIN_LABEL, VERDICT_COLOR, clock, labelFor, points, whyThisArm,
   whyUnattributable, type ActionFrame, type BanditFrame, type ChatFrame, type ResultFrame,
@@ -45,11 +45,14 @@ function nearest(elapsed: number[], target: number): number {
 
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, n) => a + n, 0) / xs.length : 0);
 
+/** Column, not block: grid stretches the tile to its tallest neighbour, and the body has to
+ *  inherit that height or a tile whose content fills it (the stream slot) sits in a short box
+ *  with dead surface under it. */
 function Tile({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="min-w-0 rounded-sm bg-[var(--bg-surface)] px-2.5 py-2">
+    <div className="flex min-w-0 flex-col rounded-sm bg-[var(--bg-surface)] px-2.5 py-2">
       <div className="text-label font-bold tracking-[0.18em] text-[var(--text-muted)]">{label}</div>
-      <div className="mt-1.5">{children}</div>
+      <div className="mt-1.5 min-h-0 flex-1">{children}</div>
     </div>
   );
 }
@@ -188,6 +191,39 @@ function Transcript({ chat, at }: { chat: ChatFrame[]; at: string }) {
   );
 }
 
+/**
+ * The half of the window we cannot see yet.
+ *
+ * Everything else here is read off chat, because chat is all the policy gets. The same window
+ * had a picture running through it, and that is usually the actual cause of whatever chat did.
+ * Named empty fields rather than prose: the slot says what is missing by its own shape, and
+ * nothing in it can be mistaken for a measurement.
+ */
+function StreamContext() {
+  return (
+    <div className="flex h-full min-h-[160px] flex-col rounded-md border border-dashed border-[var(--border)] p-2.5 text-[var(--text-muted)]"
+      title="Gambit reads the room, not the screen. Carrying stream context through the same window is next — a quiet minute on a loading screen is not the same lull as a quiet minute mid-fight.">
+      {/* The screen-shaped hole takes the slack, so the tile grows next to a long transcript
+          without the rows below drifting apart from each other. */}
+      <div className="flex flex-1 flex-col items-center justify-center gap-1.5">
+        <MonitorPlay size={20} className="opacity-50" />
+        <span className="text-body">Not captured yet</span>
+        <span className="rounded-sm bg-[var(--bg-elevated)] px-1.5 py-px text-label font-bold tracking-[0.14em]">
+          NEXT
+        </span>
+      </div>
+      <dl className="mt-2.5 space-y-1 border-t border-dashed border-[var(--border)] pt-2.5 text-label">
+        {['category', 'scene', 'last event'].map((k) => (
+          <div key={k} className="flex items-baseline gap-2">
+            <dt className="w-20 shrink-0">{k}</dt>
+            <dd className="min-w-0 flex-1 border-b border-dashed border-[var(--border)]">—</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
 export default function ResultDetail({ r, h, bandit, chat }: {
   r: LedgerRow;
   h: History;
@@ -235,13 +271,18 @@ export default function ResultDetail({ r, h, bandit, chat }: {
         </div>
       )}
 
-      {r.action?.ts && chat.length > 0 && (
-        <div className="mt-2 max-w-[420px]">
+      {/* The two halves of the context, side by side: the one we have, and the one we don't.
+          Same track sizing as the tiles above, so all four line up in one column on a laptop. */}
+      <div className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(min(100%,300px),420px))] justify-start gap-2">
+        {r.action?.ts && chat.length > 0 && (
           <Tile label="WHAT CHAT WAS SAYING">
             <Transcript chat={chat} at={r.action.ts} />
           </Tile>
-        </div>
-      )}
+        )}
+        <Tile label="WHAT THE STREAM WAS SHOWING">
+          <StreamContext />
+        </Tile>
+      </div>
 
       <div className="mt-2 flex items-baseline gap-2 text-label text-[var(--text-muted)]">
         {caveat ? (

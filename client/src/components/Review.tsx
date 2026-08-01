@@ -576,10 +576,13 @@ export default function Review({ s }: { s: GambitState }) {
               : totalLift < -NOISE_BAND ? 'less of the audience talking'
                 : 'no change in how much of the audience talks'}
           </div>
-          {/* The viewer count used to hang off the end of this line. It is a live number and
-              this sentence is about the whole session, and it is in the strip below anyway. */}
-          <div className="text-body text-[var(--text-muted)]">
-            {allFired.length} interventions · summed matched-control lift, in participation points
+          {/* The count, and not the methodology. "summed matched-control lift, in
+              participation points" defined the hero figure's unit in muted 14px directly
+              under a 32px number — the one place on the page where a reader is looking at
+              the number and not at prose about it. The LIFT column header still carries the
+              definition, on the table where a unit is actually being compared. */}
+          <div className="tnum text-body text-[var(--text-secondary)]">
+            {allFired.length} interventions
           </div>
         </div>
         <div className="ml-auto flex gap-0.5 rounded-sm border border-[var(--border)] p-0.5">

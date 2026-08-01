@@ -47,6 +47,13 @@ BASE_PER_MINUTE = 16.0  # ambient chat at heat 1.0, before the arc and the mood 
 WARMUP_S = 120.0  # the controller watches the room before it is allowed an opinion of it
 RESPONSE_WINDOW_S = 40.0  # how long a room takes to finish answering a prompt
 RESPONSE_SPREAD = 0.35  # per-fire noise on the hidden response size, as a fraction of it
+# ...and a floor under that noise, in viewers. Proportional spread alone is scale-free, which
+# sounds right and is wrong: it puts every cell of the table the same ~2.8 sigma from zero, so
+# the draw only ever set the *size* of an outcome and the table alone set its sign. A tactic
+# worth +3 was as certain as one worth +18. The floor is what makes a small effect genuinely
+# hard to read — which is the thing a bandit exists to handle, and the reason a single trial
+# is not a conclusion.
+RESPONSE_FLOOR = 2.5
 BACKFIRE_S = 45.0  # how long the room stays put out after a mistimed interruption
 REGULAR_WEIGHT = 12.0  # a regular talks this much more than a lurker, unprompted
 LURKERS = 96
@@ -62,22 +69,35 @@ URGE = {ChatState.LULL: 0.5, ChatState.STEADY: 0.25, ChatState.SPIKE: 0.25}
 # The hidden truth, and the only thing here the bandit cannot see: how many viewers answer an
 # intervention, on average, in each state. Negative means the room gets *quieter* — a prompt
 # during a clutch talks over the moment people are actually watching. Each fire samples around
-# these with `RESPONSE_SPREAD`, so a good tactic still lands flat sometimes and a bad one
-# occasionally works. That variance is the reason a bandit is the right tool and one trial
-# is not a conclusion.
+# these with `RESPONSE_SPREAD` and `RESPONSE_FLOOR`, so a good tactic still lands flat
+# sometimes and a bad one occasionally works.
+#
+# Two of the three rows change sign inside themselves, and that is the point of the table
+# rather than a detail of it. Every arm used to win in both `LULL` and `STEADY`, which left
+# exactly one thing to discover — "don't interrupt a spike" — and made the context a gate
+# rather than a choice. A quiz during a conversation that is already flowing interrupts it;
+# a prediction survives a clutch because betting on the moment *is* watching the moment. So
+# the policy has to learn an arm ranking per state, not a firing rule, and "nothing" has to
+# win on merit in the places where it should.
+#
+# Magnitudes are deliberately smaller than the room's own conversation now. Responders are
+# drawn from the whole audience, most of which is silent, so a mean of 18 added 18 brand-new
+# chatters onto a base of ten-ish and doubled participation in a single window — six times
+# the client's verdict threshold, from the *weakest* winning arm. Real prompts move a room
+# by a few percent of it.
 AUDIENCE = {
-    (ChatState.LULL, Arm.EMOTE_RALLY): 18.0,
-    (ChatState.LULL, Arm.CHAT_POLL): 15.0,
-    (ChatState.LULL, Arm.QUIZ): 11.0,
-    (ChatState.LULL, Arm.PREDICTION): 20.0,
-    (ChatState.STEADY, Arm.EMOTE_RALLY): 10.0,
-    (ChatState.STEADY, Arm.CHAT_POLL): 9.0,
-    (ChatState.STEADY, Arm.QUIZ): 6.0,
-    (ChatState.STEADY, Arm.PREDICTION): 13.0,
-    (ChatState.SPIKE, Arm.EMOTE_RALLY): -5.0,
-    (ChatState.SPIKE, Arm.CHAT_POLL): -8.0,
-    (ChatState.SPIKE, Arm.QUIZ): -10.0,
-    (ChatState.SPIKE, Arm.PREDICTION): -4.0,
+    (ChatState.LULL, Arm.EMOTE_RALLY): 9.0,
+    (ChatState.LULL, Arm.CHAT_POLL): 7.0,
+    (ChatState.LULL, Arm.QUIZ): 3.0,
+    (ChatState.LULL, Arm.PREDICTION): 11.0,
+    (ChatState.STEADY, Arm.EMOTE_RALLY): 2.0,
+    (ChatState.STEADY, Arm.CHAT_POLL): 4.0,
+    (ChatState.STEADY, Arm.QUIZ): -3.0,
+    (ChatState.STEADY, Arm.PREDICTION): 6.0,
+    (ChatState.SPIKE, Arm.EMOTE_RALLY): -3.0,
+    (ChatState.SPIKE, Arm.CHAT_POLL): -9.0,
+    (ChatState.SPIKE, Arm.QUIZ): -12.0,
+    (ChatState.SPIKE, Arm.PREDICTION): 1.0,
 }
 
 
@@ -476,7 +496,7 @@ class Scenario:
     def _respond(self, state: ChatState, arm: Arm, options: tuple[str, ...]) -> None:
         """The room answers — or stops talking, which is also an answer."""
         mean = AUDIENCE[state, arm]
-        count = round(self._rng.gauss(mean, abs(mean) * RESPONSE_SPREAD))
+        count = round(self._rng.gauss(mean, max(RESPONSE_FLOOR, abs(mean) * RESPONSE_SPREAD)))
         if count > 0:
             for who in self._rng.sample(self.personas, min(count, len(self.personas))):
                 at = self.t + self._rng.uniform(2.0, RESPONSE_WINDOW_S)

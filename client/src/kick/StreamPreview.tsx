@@ -4,10 +4,10 @@ import Panel, { PanelButton } from './Panel';
 import Heatmap from './Heatmap';
 import { useClickHeatmap } from './useClickHeatmap';
 
-/** Kick's "Stream Preview" panel. No real stream, so the body is filled by the
- *  offline banner normally, swapped for a looping gym video while the gym is
- *  running. While live, a 🔥 toggle overlays a click-density heatmap (mock
- *  clicks, plus any real click on the preview) on top of the video. */
+/** Kick's "Stream Preview" panel. No real stream, so the body is filled by a
+ *  banner: the offline banner normally, swapped for the live stream frame while
+ *  the gym is running. While live, a 🔥 toggle overlays a click-density heatmap
+ *  (mock clicks, plus any real click on the preview) on top of it. */
 export default function StreamPreview({ gymOn }: { gymOn: boolean }) {
   const [heatmapOn, setHeatmapOn] = useState(false);
   const { points, addClick } = useClickHeatmap(gymOn);
@@ -44,23 +44,11 @@ export default function StreamPreview({ gymOn }: { gymOn: boolean }) {
       {/* Absolute fill: the body is the panel minus its header, so it is never
           exactly 16:9 and a normal-flow element would overflow across the header. */}
       <div className="absolute inset-0" onClick={handleClick}>
-        {gymOn ? (
-          <video
-            src="/video-placeholder.mp4"
-            autoPlay
-            loop
-            muted
-            playsInline
-            poster="/gym.png"
-            className="absolute inset-0 size-full object-cover"
-          />
-        ) : (
-          <img
-            src="/offline-banner.webp"
-            alt=""
-            className="absolute inset-0 size-full object-cover"
-          />
-        )}
+        <img
+          src={gymOn ? '/live-stream.png' : '/offline-banner.webp'}
+          alt=""
+          className="absolute inset-0 size-full object-cover"
+        />
         {gymOn && heatmapOn && (
           <Heatmap points={points} className="pointer-events-none absolute inset-0 size-full" />
         )}

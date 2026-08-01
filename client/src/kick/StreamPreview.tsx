@@ -6,9 +6,9 @@ import { useClickHeatmap } from './useClickHeatmap';
 
 /** Kick's "Stream Preview" panel. No real stream, so the body is filled by a
  *  banner: the offline banner normally, swapped for the live stream frame while
- *  the gym is running. Turning on the 🔥 heatmap hides that frame behind a
- *  stand-in and overlays a click-density heatmap (mock clicks, plus any real
- *  click on the preview) on top. */
+ *  the gym is running. Turning on the 🔥 heatmap overlays a click-density
+ *  heatmap (mock clicks, plus any real click on the preview) on top of that
+ *  frame. */
 export default function StreamPreview({ gymOn }: { gymOn: boolean }) {
   const [heatmapOn, setHeatmapOn] = useState(false);
   // Tie generation to the toggle (not just being live) so the map starts empty
@@ -49,13 +49,7 @@ export default function StreamPreview({ gymOn }: { gymOn: boolean }) {
           exactly 16:9 and a normal-flow element would overflow across the header. */}
       <div className="absolute inset-0" onClick={handleClick}>
         <img
-          src={
-            gymOn
-              ? heatmapOn
-                ? '/live-stream-hidden.png'
-                : '/live-stream.png'
-              : '/offline-banner.webp'
-          }
+          src={gymOn ? '/live-stream-hidden.png' : '/offline-banner.webp'}
           alt=""
           className="absolute inset-0 size-full object-cover"
         />

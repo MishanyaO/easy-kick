@@ -25,6 +25,7 @@ export default function StreamInfo({ gym }: { gym: GymControlsState }) {
         </>
       }
     >
+      <p className="text-sm text-white">Kick insights demo</p>
       <div className="mt-2 flex items-center gap-2">
         {/* Category box art. */}
         <img

@@ -128,6 +128,27 @@
                 color: rgba(255, 255, 255, 0.75);
             }
 
+            /* One real-world number under the problem statement, sourced small. */
+            .stat {
+                margin-top: 3.4vh;
+                font-size: 1.35vw;
+                color: var(--dim);
+            }
+            .stat b {
+                color: #ffd9a3;
+                font-size: 2.4vw;
+                font-weight: 800;
+                margin-right: 0.35vw;
+            }
+            .stat .src {
+                display: block;
+                margin-top: 0.5vh;
+                font-size: 0.8vw;
+                letter-spacing: 0.2em;
+                text-transform: uppercase;
+                color: rgba(255, 255, 255, 0.4);
+            }
+
             /* ---------- slide 1: the scroll ---------- */
             .s1 {
                 flex-direction: row !important;
@@ -422,6 +443,18 @@
                 line-height: 1.4;
             }
 
+            /* ---------- slide 4: next steps ---------- */
+            .s4 {
+                justify-content: center;
+            }
+            .tiles2 {
+                grid-template-columns: repeat(3, 1fr);
+            }
+            .tiles2 .tile .note b {
+                color: #ffd9a3;
+                font-weight: 600;
+            }
+
             @media print {
                 @page {
                     size: landscape;
@@ -561,6 +594,10 @@
                     Bots post on a timer, right moment or not. Nothing checks
                     whether it worked. So nothing ever gets better.
                 </p>
+                <p class="stat">
+                    <b>88%</b> of viewers never chat at all
+                    <span class="src">real Kick data</span>
+                </p>
             </div>
             <div class="scroller">
                 <div class="scroll-track" id="track"></div>
@@ -637,9 +674,10 @@
                 </div>
                 <div class="tile">
                     <div class="lab">The number we move</div>
-                    <div class="big"><span>~5%</span> talk</div>
+                    <div class="big"><span>23%</span> talk</div>
                     <div class="note">
-                        Of everyone watching. Lifting that is the whole game.
+                        Of viewers chat in a given hour — real Kick data. The
+                        silent 88% is the pool we convert.
                     </div>
                 </div>
                 <div class="tile">
@@ -648,7 +686,50 @@
                         Kick API,<br /><span>no waiting</span>
                     </div>
                     <div class="note">
-                        Built on endpoints that already exist. Live demo next.
+                        OAuth, signed webhooks, live chat writes — endpoints
+                        that already exist. Live demo next.
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 4 — next steps -->
+        <section class="slide s4">
+            <div class="kicker">Next steps</div>
+            <h1>The co-host gets <em>eyes and ears</em></h1>
+            <p class="sub">
+                Same loop, richer senses — and platform scale.
+            </p>
+            <div class="tiles tiles2">
+                <div class="tile">
+                    <div class="lab">Us — see &amp; hear the stream</div>
+                    <div class="big">LLM watches<br /><span>the game</span></div>
+                    <div class="note">
+                        Gameplay video + streamer audio in context: polls about
+                        the clutch that just happened, predictions opened right
+                        before the next round. The bandit still decides
+                        <b>when</b> — the LLM just makes the <b>what</b>
+                        sharper.
+                    </div>
+                </div>
+                <div class="tile">
+                    <div class="lab">Wild card — built: click heatmap</div>
+                    <div class="big">Clicks: a <span>second</span><br />dimension</div>
+                    <div class="note">
+                        The silent 88% never type — but they click. Our live
+                        heatmap shows where the room is looking, one streamer
+                        button to enable. Ask to Kick: expose clicks as
+                        webhooks, and they feed the same learning loop.
+                    </div>
+                </div>
+                <div class="tile">
+                    <div class="lab">Platform — learn across channels</div>
+                    <div class="big">Insights from<br /><span>all of Kick</span></div>
+                    <div class="note">
+                        One channel gives ~40 decisions a stream; the platform
+                        gives thousands an hour. Pool them and a day-one
+                        streamer starts with tactics that <b>already work</b> —
+                        benchmarked against channels like theirs.
                     </div>
                 </div>
             </div>

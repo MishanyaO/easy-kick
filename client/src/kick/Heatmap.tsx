@@ -1,0 +1,100 @@
+import { useEffect, useRef } from 'react';
+import type { Point } from './useClickHeatmap';
+
+/** Radius of a single click's influence, in CSS pixels. */
+const BLOB_RADIUS = 26;
+/** Per-blob peak opacity in the alpha pass; overlapping blobs sum toward full. */
+const BLOB_ALPHA = 0.28;
+
+/** 256-entry blue→cyan→green→yellow→red lookup, indexed by accumulated alpha.
+ *  Built once from a canvas gradient. Returns a flat RGBA array (length 1024). */
+function buildGradient(): Uint8ClampedArray {
+  const c = document.createElement('canvas');
+  c.width = 1;
+  c.height = 256;
+  const g = c.getContext('2d')!;
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0.0, '#0000ff');
+  grad.addColorStop(0.4, '#00ffff');
+  grad.addColorStop(0.6, '#00ff00');
+  grad.addColorStop(0.8, '#ffff00');
+  grad.addColorStop(1.0, '#ff0000');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 1, 256);
+  return g.getImageData(0, 0, 1, 256).data;
+}
+
+/**
+ * Translucent click-density heatmap drawn on a canvas that fills its parent.
+ *
+ * Two passes, the standard heatmap technique:
+ *   1. draw every point as a soft radial blob into an alpha buffer, so
+ *      overlapping clicks accumulate coverage;
+ *   2. recolor each pixel by its accumulated alpha through a warm gradient LUT,
+ *      keeping a scaled alpha so the map reads as a translucent overlay.
+ *
+ * Points are normalized [0,1]; a ResizeObserver keeps the canvas backing store
+ * matched to its displayed size (device-pixel-ratio aware) and repaints.
+ */
+export default function Heatmap({ points, className }: { points: Point[]; className?: string }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const gradientRef = useRef<Uint8ClampedArray | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    if (!gradientRef.current) gradientRef.current = buildGradient();
+    const gradient = gradientRef.current;
+
+    const draw = () => {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const w = Math.max(1, Math.round(rect.width * dpr));
+      const h = Math.max(1, Math.round(rect.height * dpr));
+      if (canvas.width !== w) canvas.width = w;
+      if (canvas.height !== h) canvas.height = h;
+
+      ctx.clearRect(0, 0, w, h);
+      if (points.length === 0) return;
+
+      // Pass 1: alpha blobs.
+      ctx.globalCompositeOperation = 'source-over';
+      const r = BLOB_RADIUS * dpr;
+      for (const p of points) {
+        const x = p.x * w;
+        const y = p.y * h;
+        const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+        g.addColorStop(0, `rgba(0,0,0,${BLOB_ALPHA})`);
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Pass 2: colorize by alpha.
+      const img = ctx.getImageData(0, 0, w, h);
+      const d = img.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const a = d[i + 3];
+        if (a === 0) continue;
+        const off = a * 4; // LUT index by 0..255 alpha
+        d[i] = gradient[off];
+        d[i + 1] = gradient[off + 1];
+        d[i + 2] = gradient[off + 2];
+        // Cap overlay opacity so the video stays visible underneath.
+        d[i + 3] = Math.min(200, a);
+      }
+      ctx.putImageData(img, 0, 0);
+    };
+
+    draw();
+    const ro = new ResizeObserver(draw);
+    ro.observe(canvas);
+    return () => ro.disconnect();
+  }, [points]);
+
+  return <canvas ref={canvasRef} className={className} />;
+}

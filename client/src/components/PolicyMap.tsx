@@ -348,15 +348,17 @@ function LastCall({ d }: { d: LastDecision }) {
 
   return (
     <section className="rounded-sm border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+      {/* The heading carries the mechanism, so the line under it can be the one fact the
+          bars do not show: which chat state this roll was made in. "One roll per belief,
+          highest plays" is what the bars are a picture of — a reader who has them in front
+          of them does not need it written out underneath as well. */}
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <span className="shrink-0 text-body font-bold tracking-[0.18em] text-[var(--text-secondary)]">
           WHY IT PICKED THAT
         </span>
-        {/* The state, and the one sentence that makes the bars mean anything. The mechanism
-            was spelled out twice — here and again under the bars — and the second telling
-            was the one in the faintest grey. */}
-        <span className="text-body text-[var(--text-secondary)]">
-          {STATE_PHRASE[d.state]} — one roll per belief, highest plays.
+        <span className="text-body text-[var(--text-secondary)]"
+          title="One number is rolled out of each belief and the highest plays — a wide belief rolls wild, which is the exploring.">
+          {STATE_PHRASE[d.state]}
         </span>
       </div>
 
@@ -399,55 +401,32 @@ function LastCall({ d }: { d: LastDecision }) {
           other branch used to restate the sentence in the header, in grey, every window. */}
       {d.forced_control && (
         <p className="mt-2 text-body leading-snug text-[var(--text-secondary)]">
-          Held back on purpose — a share of every session is reserved as quiet windows to
-          measure the loud ones against.
+          Held back on purpose — a reserved quiet window to measure the loud ones against.
         </p>
       )}
     </section>
   );
 }
 
-/** The empty state, which is a designed surface rather than an apology — the first seconds
- *  of a demo are spent on it, and the shape of the experiment is interesting before there
- *  is anything in it. */
+/** The empty state: what this surface will hold, once. The three-step account of the
+ *  experiment that used to sit under it — one question per cell, silence as the thing to
+ *  beat, every answer starting at a coin flip — is all three legible off the cards the
+ *  moment there are cards, and every row on them says "sure it beats staying quiet" in
+ *  words. */
 function Empty({ cells }: { cells: number }) {
   return (
     <div className="flex justify-center py-10">
-      <div className="w-full max-w-[560px] rounded-sm border border-dashed border-[var(--border)] bg-[var(--bg-elevated)] p-6 text-center">
+      <div className="w-full max-w-[440px] rounded-sm border border-dashed border-[var(--border)] bg-[var(--bg-elevated)] p-6 text-center">
         <div className="mx-auto flex size-11 items-center justify-center rounded-full bg-[var(--bg-surface)] text-[var(--kick-green)]">
           <FlaskConical size={18} />
         </div>
-        <div className="mt-3 text-label font-bold tracking-[0.2em] text-[var(--text-muted)]">
-          NOTHING LEARNED YET
-        </div>
-        <h3 className="mt-1 text-stat font-semibold text-[var(--text-primary)]">
+        <h3 className="mt-3 text-stat font-semibold text-[var(--text-primary)]">
           Three kinds of chat, {cells} questions
         </h3>
-        <p className="mx-auto mt-2 max-w-[440px] text-body leading-relaxed text-[var(--text-secondary)]">
-          Every chat state runs its own experiment, and tactics are only ever compared within
-          one — a spike out-chats a lull no matter what fired in it, so ranking across states
-          would be measuring the state.
+        <p className="mt-1.5 text-body leading-relaxed text-[var(--text-secondary)]">
+          Each one asks whether a tactic beats staying quiet in that kind of chat. Every
+          answer starts at a coin flip.
         </p>
-        <ol className="mt-5 space-y-2 text-left">
-          {([
-            ['Each cell asks one question',
-              'does this tactic beat staying quiet, in this kind of chat — and the answer is a probability, not a score'],
-            ['Staying quiet is the thing to beat',
-              'it holds its own belief and every interruption is charged a cost, so silence has to be beaten on evidence'],
-            ['Every answer starts at a coin flip',
-              'start the simulator and watch them separate in minutes instead of over a season'],
-          ] as [string, string][]).map(([step, why], i) => (
-            <li key={step} className="flex gap-3 rounded-sm bg-[var(--bg-surface)] px-3 py-2.5">
-              <span className="tnum mt-px shrink-0 text-body font-bold text-[var(--kick-green)]">
-                {i + 1}
-              </span>
-              <span className="min-w-0">
-                <span className="text-body font-medium text-[var(--text-primary)]">{step}</span>
-                <span className="block text-body leading-snug text-[var(--text-muted)]">{why}</span>
-              </span>
-            </li>
-          ))}
-        </ol>
       </div>
     </div>
   );

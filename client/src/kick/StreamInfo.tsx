@@ -31,7 +31,7 @@ export default function StreamInfo({ gym }: { gym: GymControlsState }) {
         <img
           src="/category-meccha-chameleon.png"
           alt=""
-          className="size-9 shrink-0 rounded object-cover"
+          className="size-9 shrink-0 rounded object-contain"
         />
         <div className="flex min-w-0 flex-col gap-1">
           <span className="truncate text-sm text-white">Meccha Chameleon</span>

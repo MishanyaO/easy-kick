@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import type { Point } from './useClickHeatmap';
+import { FADE_MS, type Point } from './useClickHeatmap';
 
 /** Radius of a single click's influence, in CSS pixels. */
 const BLOB_RADIUS = 26;
@@ -24,24 +24,30 @@ function buildGradient(): Uint8ClampedArray {
   return g.getImageData(0, 0, 1, 256).data;
 }
 
+/** Cap the redraw rate. Each frame reads back the whole canvas (getImageData),
+ *  so 60fps is wasteful; ~30fps is smooth enough for a fade. */
+const FRAME_MS = 1000 / 30;
+
 /**
  * Translucent click-density heatmap drawn on a canvas that fills its parent.
  *
  * Two passes, the standard heatmap technique:
  *   1. draw every point as a soft radial blob into an alpha buffer, so
- *      overlapping clicks accumulate coverage;
+ *      overlapping clicks accumulate coverage — each blob scaled by how much
+ *      life it has left, so a click fades out over FADE_MS;
  *   2. recolor each pixel by its accumulated alpha through a warm gradient LUT,
  *      keeping a scaled alpha so the map reads as a translucent overlay.
  *
+ * Because points fade continuously (not only when new ones arrive), the canvas
+ * repaints on a throttled requestAnimationFrame loop rather than on prop change.
  * Points are normalized [0,1]; a ResizeObserver keeps the canvas backing store
- * matched to its displayed size (device-pixel-ratio aware) and repaints.
+ * matched to its displayed size (device-pixel-ratio aware).
  */
 export default function Heatmap({ points, className }: { points: Point[]; className?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gradientRef = useRef<Uint8ClampedArray | null>(null);
   const pointsRef = useRef(points);
   pointsRef.current = points;
-  const drawRef = useRef<() => void>(() => {});
 
   // Mount once: build the gradient LUT, wire up the draw function (reading the
   // latest points via a ref so it never goes stale), and observe resizes.
@@ -67,14 +73,18 @@ export default function Heatmap({ points, className }: { points: Point[]; classN
       ctx.clearRect(0, 0, w, h);
       if (points.length === 0) return;
 
-      // Pass 1: alpha blobs.
+      // Pass 1: alpha blobs, each dimmed by how much life it has left so it
+      // fades out over FADE_MS.
+      const now = Date.now();
       ctx.globalCompositeOperation = 'source-over';
       const r = BLOB_RADIUS * dpr;
       for (const p of points) {
+        const life = 1 - (now - p.born) / FADE_MS;
+        if (life <= 0) continue;
         const x = p.x * w;
         const y = p.y * h;
         const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-        g.addColorStop(0, `rgba(0,0,0,${BLOB_ALPHA})`);
+        g.addColorStop(0, `rgba(0,0,0,${BLOB_ALPHA * life})`);
         g.addColorStop(1, 'rgba(0,0,0,0)');
         ctx.fillStyle = g;
         ctx.beginPath();
@@ -98,17 +108,26 @@ export default function Heatmap({ points, className }: { points: Point[]; classN
       ctx.putImageData(img, 0, 0);
     };
 
-    drawRef.current = draw;
-    draw();
     const ro = new ResizeObserver(draw);
     ro.observe(canvas);
-    return () => ro.disconnect();
-  }, []);
 
-  // Repaint whenever points change, without touching the ResizeObserver.
-  useEffect(() => {
-    drawRef.current();
-  }, [points]);
+    // Points fade continuously, so repaint on a throttled rAF loop rather than
+    // only when the points prop changes.
+    let raf = 0;
+    let last = 0;
+    const loop = (t: number) => {
+      raf = requestAnimationFrame(loop);
+      if (t - last < FRAME_MS) return;
+      last = t;
+      draw();
+    };
+    raf = requestAnimationFrame(loop);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  }, []);
 
   return <canvas ref={canvasRef} className={className} />;
 }

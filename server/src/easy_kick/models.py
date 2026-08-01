@@ -38,6 +38,9 @@ class Arm(StrEnum):
     QUIZ = "quiz"
     CHAT_DIGEST = "chat_digest"
     PREDICTION = "prediction"
+    # Asks the room to tap the video itself. The only arm answerable without typing, which
+    # is why it converts the part of an audience that never speaks.
+    CLICK_RALLY = "click_rally"
 
 
 class Autonomy(StrEnum):
@@ -74,6 +77,7 @@ BANDIT_ARMS = (
     Arm.CHAT_POLL,
     Arm.QUIZ,
     Arm.PREDICTION,
+    Arm.CLICK_RALLY,
 )
 
 # Safety policy, not something learning can promote away.

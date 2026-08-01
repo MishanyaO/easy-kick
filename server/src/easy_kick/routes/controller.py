@@ -15,7 +15,7 @@ from ..config import PROJECT_ROOT
 from ..controller import TICK_S, Controller, build_stack, hub_publisher
 from ..gym import POLICIES, Gym, simulate
 from ..models import APPROVAL_ONLY_ARMS, BANDIT_ARMS, Arm, Autonomy, Mode
-from ..scenario import Scenario, catalogue
+from ..scenario import DEFAULT_SEED, Scenario, catalogue
 from ..security import require_control_key
 
 router = APIRouter(tags=["controller"])
@@ -103,6 +103,9 @@ async def _run_gym(app, state: GymState) -> None:
             state.gym.step(step_s)
             if state.gym.completed:
                 return
+            if state.gym.hold:
+                _hold(app, state)
+                return
             continue
         wall_s = min(TICK_S / state.speed, 1.0)
         await asyncio.sleep(wall_s)
@@ -113,6 +116,23 @@ async def _run_gym(app, state: GymState) -> None:
         if virtual_since_tick >= TICK_S:
             virtual_since_tick -= TICK_S
             controller.tick(state.gym.now)
+
+
+def _hold(app, state: GymState) -> None:
+    """The story asked for the clock to stop, on a beat it wants looked at.
+
+    Exactly a pause, and reached the same way one is — the gym, its metrics and its uptime
+    are kept, and Start resumes it — so the only thing that makes this different from the
+    streamer hitting the button is who pressed it. The frame tells the dashboard, which
+    freezes the click map on the picture the hold was called for rather than letting it
+    fade out while it is being talked about.
+    """
+    state.gym.hold = False  # consumed: resuming must not stop again on the same beat
+    state.paused_at = time.time()
+    hub_publisher(app.state.hub, app.state.controller_history)(
+        "controller.hold", {"type": "hold", "reason": "click rally"}
+    )
+    logger.info("scenario held at t=%.1fs", state.gym.t)
 
 
 def gym_fire(app, state: GymState):
@@ -186,9 +206,14 @@ def _is_sent(response: dict) -> bool:
 
 @gym_router.post("")
 async def start_gym(request: Request, speed: float = Query(1.0, gt=0, le=100),
-                    seed: int = 0,
+                    seed: int | None = None,
                     mode: Literal["gym", "scenario"] = "gym") -> dict:
     state: GymState = request.app.state.gym
+    # A prepared run without a seed means "play the one we prepared" — the seed is the
+    # whole show, so there is a named default for it. The gym is a statistical harness and
+    # has no such thing, hence 0.
+    if seed is None:
+        seed = DEFAULT_SEED if mode == "scenario" else 0
     if state.running:
         raise HTTPException(status_code=409, detail="a gym is already running")
     context = request.app.state.context

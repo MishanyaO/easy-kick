@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { FADE_MS, type Point } from './useClickHeatmap';
+import { CLICK_FADE_MS } from '../types';
+import type { Point } from './useClickHeatmap';
 
 /** Radius of a single click's influence, in CSS pixels. */
 const BLOB_RADIUS = 34;
@@ -39,7 +40,7 @@ const FRAME_MS = 1000 / 30;
  * Two passes, the standard heatmap technique:
  *   1. draw every point as a soft radial blob into an alpha buffer, so
  *      overlapping clicks accumulate coverage — each blob scaled by how much
- *      life it has left, so a click fades out over FADE_MS;
+ *      life it has left, so a click fades out over CLICK_FADE_MS;
  *   2. recolor each pixel by its accumulated alpha through a warm gradient LUT,
  *      keeping a scaled alpha so the map reads as a translucent overlay.
  *
@@ -48,11 +49,35 @@ const FRAME_MS = 1000 / 30;
  * Points are normalized [0,1]; a ResizeObserver keeps the canvas backing store
  * matched to its displayed size (device-pixel-ratio aware).
  */
-export default function Heatmap({ points, className }: { points: Point[]; className?: string }) {
+export default function Heatmap({
+  points,
+  frozen = false,
+  className,
+}: {
+  points: Point[];
+  /** Stop the clock the blobs age against, for as long as this is true. */
+  frozen?: boolean;
+  className?: string;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gradientRef = useRef<Uint8ClampedArray | null>(null);
   const pointsRef = useRef(points);
   pointsRef.current = points;
+
+  // The map ages against its own clock, which stops while `frozen` and carries on from
+  // where it stopped afterwards — so a held run keeps its picture for as long as the
+  // streamer wants it, and unfreezing fades that picture out over the usual life of a tap
+  // instead of blinking it away because wall time moved on without it.
+  const frozenAtRef = useRef<number | null>(null);
+  const heldMsRef = useRef(0);
+  if (frozen && frozenAtRef.current === null) {
+    frozenAtRef.current = Date.now();
+  } else if (!frozen && frozenAtRef.current !== null) {
+    heldMsRef.current += Date.now() - frozenAtRef.current;
+    frozenAtRef.current = null;
+  }
+  const clockRef = useRef<() => number>(() => 0);
+  clockRef.current = () => (frozenAtRef.current ?? Date.now()) - heldMsRef.current;
 
   // Mount once: build the gradient LUT, wire up the draw function (reading the
   // latest points via a ref so it never goes stale), and observe resizes.
@@ -79,12 +104,14 @@ export default function Heatmap({ points, className }: { points: Point[]; classN
       if (points.length === 0) return;
 
       // Pass 1: alpha blobs, each dimmed by how much life it has left so it
-      // fades out over FADE_MS.
-      const now = Date.now();
+      // fades out over CLICK_FADE_MS.
+      const now = clockRef.current();
       ctx.globalCompositeOperation = 'source-over';
       const r = BLOB_RADIUS * dpr;
       for (const p of points) {
-        const life = 1 - (now - p.born) / FADE_MS;
+        // Capped at 1: taps that arrive after a hold are stamped in wall time, which the
+        // map's clock is behind by however long it was frozen.
+        const life = Math.min(1, 1 - (now - p.born) / CLICK_FADE_MS);
         if (life <= 0) continue;
         const x = p.x * w;
         const y = p.y * h;

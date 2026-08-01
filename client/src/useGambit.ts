@@ -2,7 +2,8 @@
 import { useEffect, useReducer, useRef } from 'react';
 import { AWARD_SIGILS, cellKey } from './types';
 import type {
-  ActionFrame, Arm, Autonomy, AwardFrame, BanditFrame, Belief, ChatFrame, ClosedPoll,
+  ActionFrame, Arm, Autonomy, AwardFrame, BanditFrame, Belief, ChatFrame, ClickPoint,
+  ClosedPoll,
   ContextFrame, DigestFrame, Frame, Mode, PollFrame, ResultFrame,
 } from './types';
 export type { ClosedPoll } from './types';
@@ -97,6 +98,11 @@ export type GambitState = {
   closedPoll: ClosedPoll | null;
   /** chat_digest cards, newest first — never posted to chat, never scored */
   digests: DigestFrame[];
+  /** taps on the video, oldest first — what the Stream Preview heatmap draws */
+  clicks: ClickPoint[];
+  /** the backend stopped its clock on a beat it wants looked at. The map freezes on it
+   *  instead of fading, since nothing is arriving to keep it alive */
+  held: boolean;
   /** everyone who has earned anything this session — the denominator the Rewards columns
    *  are a sample of */
   ranked: number;
@@ -122,9 +128,16 @@ const EMPTY: GambitState = {
   actionsSpark: [], lastBot: null,
   viewerHistory: [], activeViewersHistory: [], actionsHistory: [], historyElapsedS: [],
   pending: null, inflight: {}, seen: {}, results: [], bandit: null, banditTrail: {},
-  poll: null, closedPoll: null, digests: [], tick: 0,
+  poll: null, closedPoll: null, digests: [], tick: 0, clicks: [],
+  held: false,
   ranked: 0, awards: [],
 };
+
+/** Taps kept on screen at once. A rally lands a few hundred inside a second or two, so this
+ *  is sized to hold a whole one — and to bound it: the map is a density, and once a spot is
+ *  saturated more points there change nothing but the redraw cost. The oldest fall off the
+ *  front, which is also how the map drains after a burst. */
+const MAX_CLICKS = 600;
 
 /** Samples of each belief kept for the policy map. A bandit frame lands on every decision
  *  and every window close, so this is a few hundred decisions' worth. */
@@ -185,10 +198,15 @@ function reduce(s: GambitState, m: Msg): GambitState {
       };
     }
 
+    case 'hold':
+      return { ...s, held: true };
+
     case 'context':
       return {
         ...s,
         context: f,
+        // The clock is running again — a context frame only lands on a tick.
+        held: false,
         spark: [...s.spark.slice(-MAX_SPARK + 1), f.participation],
         viewerSpark: [...s.viewerSpark.slice(-MAX_SPARK + 1), f.viewer_count ?? 0],
         activeViewersSpark: [...s.activeViewersSpark.slice(-MAX_SPARK + 1), f.unique_chatters],
@@ -268,6 +286,21 @@ function reduce(s: GambitState, m: Msg): GambitState {
     case 'digest':
       return { ...s, digests: [f, ...s.digests].slice(0, MAX_DIGESTS) };
 
+    // A batch of taps on the video. Stamped on arrival rather than trusted from the wire:
+    // the backend clock is virtual and runs faster than this one, so its timestamps are the
+    // wrong units to fade a blob by.
+    case 'clicks': {
+      const born = Date.now();
+      // Bounded by count, never by age. The renderer owns fading and its clock stops while
+      // a run is held, so a point that looks stale by wall time may still be on screen —
+      // dropping it here is what made a held map blink away the instant the run resumed.
+      const next = [...s.clicks, ...f.points.map(([x, y]) => ({ x, y, born }))];
+      return {
+        ...s,
+        clicks: next.length > MAX_CLICKS ? next.slice(next.length - MAX_CLICKS) : next,
+      };
+    }
+
     // `ranked` is a snapshot — the server's own count of everyone who has earned anything —
     // rather than something derived by counting names across the awards we happen to still
     // be holding, which would shrink as the feed rolls over.
@@ -298,7 +331,10 @@ export function useGambit() {
     src.onmessage = (e) => {
       try {
         const frame = JSON.parse(e.data) as Frame;
-        if (frame.type === 'chat') {
+        // Chat and clicks are the two frames that carry no sequence: both are live audience
+        // traffic rather than session record, so they go straight through and never touch
+        // the ordering gate below.
+        if (frame.type === 'chat' || frame.type === 'clicks') {
           dispatch({ kind: 'frame', frame });
           return;
         }

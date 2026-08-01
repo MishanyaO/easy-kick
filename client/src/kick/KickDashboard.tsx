@@ -50,7 +50,14 @@ export default function KickDashboard() {
 
             {/* Aspect, not a fixed height — a short wide box crops the banner. */}
             <div className="aspect-[16/9] max-h-[520px] shrink-0">
-              <StreamPreview gymOn={gym.status === 'running'} />
+              {/* Paused counts as on: a paused run is a stream someone stopped the clock
+                  on, not an offline channel — and swapping in the offline banner would
+                  take away the very frame the hold exists to let you look at. */}
+              <StreamPreview
+                gymOn={gym.status !== 'idle'}
+                clicks={s.clicks}
+                held={s.held}
+              />
             </div>
 
             {/* Kick's own bottom row, but the right half is ours now: Insights in the

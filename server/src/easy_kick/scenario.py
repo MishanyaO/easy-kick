@@ -19,6 +19,15 @@ those messages alone, Thompson sampling picks the tactic, ``RewardBook`` scores 
 against matched quiet controls, and the votes are counted by the same parser a live Kick
 poll goes through. The only thing this module knows that the policy does not is ``AUDIENCE``
 — the hidden truth it has to discover.
+
+The room has a second way to answer, and it is the one the dashboard puts on the video: the
+click map over Stream Preview. Taps are modelled here alongside the chat, off the same clock
+and the same beats, and streamed out as their own frames — so the heatmap is this world's
+output rather than a decoration the client invents on its own. It is also what makes
+``click_rally`` worth having as an arm: a tap is the only answer a viewer can give without
+typing, so it reaches the part of an audience that never speaks. Nothing else fills the map,
+and nobody taps a stream unprompted — the video stays clean until a rally asks for it, so
+what appears there is the arm's doing and can't be mistaken for ambient noise.
 """
 
 from __future__ import annotations
@@ -37,10 +46,19 @@ from .controller import COOLDOWN_S, TICK_S, Card as ControllerCard, Controller
 from .engagement import BOT_NAME, EngagementMonitor
 from .hub import EventHub
 from .models import APPROVAL_ONLY_ARMS, Arm, Autonomy, ChatState, EventEnvelope, EventType
-from .reward import RewardBook
+from .reward import WINDOW_S, RewardBook
 from .store import EventStore
 
 SCENARIO_NAME = "ranked_run"
+# Which session the demo plays when nobody says otherwise.
+#
+# The seed *is* the run: the arc, who talks and when, every card the bot draws, every
+# outcome and the exact moment the showcase lands are all drawn from it, so a seed is a
+# reproducible show rather than a random number. Change this to rehearse a different one —
+# `POST /dev/gym?mode=scenario&seed=N` overrides it per run, and the dashboard's Start
+# button takes it from `DEMO_SEED` in `client/src/kick/useGymControls.ts`, which is the
+# other end of the same dial.
+DEFAULT_SEED = 7
 RUN_S = 7200.0  # two virtual hours of stream — a ranked session, not a highlight reel
 VIEWERS = 640
 BASE_PER_MINUTE = 16.0  # ambient chat at heat 1.0, before the arc and the mood multiply it
@@ -85,20 +103,88 @@ URGE = {ChatState.LULL: 0.5, ChatState.STEADY: 0.25, ChatState.SPIKE: 0.25}
 # chatters onto a base of ten-ish and doubled participation in a single window — six times
 # the client's verdict threshold, from the *weakest* winning arm. Real prompts move a room
 # by a few percent of it.
+#
+# `click_rally` is the arm this table is most opinionated about, and deliberately: it is the
+# only prompt that can be answered without typing, so it converts the silent tail no other
+# arm reaches, and it is the only one that survives a spike intact — a tap does not talk over
+# the moment, it points at it. It still has to be *learned*: it is beaten in `steady`, where
+# a room mid-conversation would rather keep talking than aim at the video.
 AUDIENCE = {
     (ChatState.LULL, Arm.EMOTE_RALLY): 9.0,
     (ChatState.LULL, Arm.CHAT_POLL): 7.0,
     (ChatState.LULL, Arm.QUIZ): 3.0,
     (ChatState.LULL, Arm.PREDICTION): 11.0,
+    (ChatState.LULL, Arm.CLICK_RALLY): 14.0,
     (ChatState.STEADY, Arm.EMOTE_RALLY): 2.0,
     (ChatState.STEADY, Arm.CHAT_POLL): 4.0,
     (ChatState.STEADY, Arm.QUIZ): -3.0,
     (ChatState.STEADY, Arm.PREDICTION): 6.0,
+    (ChatState.STEADY, Arm.CLICK_RALLY): 5.0,
     (ChatState.SPIKE, Arm.EMOTE_RALLY): -3.0,
     (ChatState.SPIKE, Arm.CHAT_POLL): -9.0,
     (ChatState.SPIKE, Arm.QUIZ): -12.0,
     (ChatState.SPIKE, Arm.PREDICTION): 1.0,
+    (ChatState.SPIKE, Arm.CLICK_RALLY): 4.0,
 }
+
+# --- the video, and where the room taps it ---------------------------------------------
+#
+# Stream Preview draws a click-density map over the frame, and these are the coordinates it
+# renders in: normalised [0,1] across and down, so nothing here depends on the size of the
+# panel the video lands in.
+#
+# A click rally is the only thing that puts taps on the video, and the map is empty the rest
+# of the time. Nobody clicks a stream unprompted — modelling an idle drizzle of taps made the
+# map look alive from the first second, which is exactly backwards: the whole claim is that
+# the arm creates the attention, and a map that is already warm before anything fires has
+# nothing left to show when something does.
+#
+# Asked directly, a room aims. Most of a rally lands on whatever was pointed at, and the rest
+# taps wherever it likes, because rooms do.
+TARGET = (0.225, 0.30)  # what a rally points at, normalised across and down the frame
+RALLY_SPREAD = 0.03
+RALLY_FOCUS = 0.88
+CLICK_TICK_S = 2.0  # taps are batched into one frame per this many virtual seconds
+TAPS_PER_MINUTE = 20.0  # one viewer's tapping while a rally is on — a tap every three seconds
+# ...and how many viewers are doing that, per viewer who answered *in chat*. This number is
+# the arm's entire claim, so it is worth saying plainly: a tap costs nothing and needs no
+# words, so a rally reaches an order of magnitude more of the room than the handful who
+# type — which is why the map fills the way it does, and why it fills for a room that
+# looks quiet in every other panel on the dashboard.
+TAPPERS_PER_RESPONDER = 12.0
+
+# --- the showcase ----------------------------------------------------------------------
+#
+# One scripted beat in a show that is otherwise entirely drawn from the seed, and the only
+# one — said out loud here rather than hidden, because everything else in this module exists
+# to make the point that nothing is scripted.
+#
+# A click rally is the thing worth watching and the bandit decides when to play one, which
+# on a stage means it might happen while nobody is looking at the screen, or not for another
+# ten minutes. So at `SHOWCASE_AT` the story *asks* for one — through the same rails, logged
+# as a manual trial, so it never becomes evidence the policy learns from — and then holds
+# the stream on the outcome so there is something to talk over.
+#
+# Placed a few minutes in rather than at the top: by then the room is warm, the ledger has
+# rows, and a couple of ordinary interventions have already been and gone, so the rally
+# reads as a thing that happened in a session rather than the session's opening move.
+SHOWCASE_AT = 600.0
+# How long the showcase holds out for a quiet room before taking whatever it is given. A
+# click rally is at its best in a `lull` — that is the hidden table, and it is also just
+# what a streamer would do: you ask the room to look at something when it has gone quiet,
+# not while it is already shouting. Waiting is the difference between a showcase that
+# lands +2 points on twenty new voices and one that lands inside the noise band.
+#
+# Timed from the moment the arm becomes available — it ships switched off, and the streamer
+# turning it on is the real cue — so this is how long the room has to go quiet after they
+# ask for it, not a slot in the run they have to catch.
+SHOWCASE_PATIENCE = 600.0
+# How long to keep running after the rally lands before holding. The room stops tapping at
+# `RESPONSE_WINDOW_S`; this waits the extra beat for the measured window to close, so the
+# stream stops on the finished thing — the map still lit, and the row under it in the feed
+# saying what the rally actually did. Holding before that left the feed's top row belonging
+# to whatever came *before* the rally, which reads as the rally never having happened.
+SHOWCASE_HOLD_S = WINDOW_S + TICK_S
 
 
 @dataclass(frozen=True)
@@ -153,6 +239,9 @@ CARDS: dict[str, tuple[Card, ...]] = {
         Card(Arm.EMOTE_RALLY, "Emote rally", "quiet lobby, loud chat — emote check"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "drop an emote if you're still here"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "spam something while we queue"),
+        Card(Arm.CLICK_RALLY, "Click rally", "he's hiding as a cow again — tap where he is"),
+        Card(Arm.CLICK_RALLY, "Click rally", "tap the cow if you think that's him"),
+        Card(Arm.CLICK_RALLY, "Click rally", "spot the chameleon: click him on the stream"),
     ),
     "banter": (
         Card(Arm.CHAT_POLL, "Chat poll", "better drop spot: caves or tower?",
@@ -169,6 +258,9 @@ CARDS: dict[str, tuple[Card, ...]] = {
         Card(Arm.EMOTE_RALLY, "Emote rally", "GG in chat"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "W in chat if that was clean"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "emote if you're staying for one more"),
+        Card(Arm.CLICK_RALLY, "Click rally", "tap where you'd have hidden instead"),
+        Card(Arm.CLICK_RALLY, "Click rally", "the mask fooled nobody — tap where he was"),
+        Card(Arm.CLICK_RALLY, "Click rally", "click the cow if you called it first"),
     ),
     "fight": (
         Card(Arm.CHAT_POLL, "Chat poll", "best play there — flank or hold?",
@@ -181,6 +273,8 @@ CARDS: dict[str, tuple[Card, ...]] = {
         Card(Arm.PREDICTION, "Prediction", "/prediction Escapes the third party? | yes | no"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "emote if he wins this one"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "spam it if that shot lands"),
+        Card(Arm.CLICK_RALLY, "Click rally", "tap the screen — which one is the guy?"),
+        Card(Arm.CLICK_RALLY, "Click rally", "click the cow you think just blinked"),
     ),
     "clutch": (
         Card(Arm.CHAT_POLL, "Chat poll", "do they take this: yes or no?", ("yes", "no")),
@@ -192,6 +286,8 @@ CARDS: dict[str, tuple[Card, ...]] = {
         Card(Arm.PREDICTION, "Prediction", "/prediction Final fight win? | yes | no"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "EMOTE WALL NOW"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "SPAM IT"),
+        Card(Arm.CLICK_RALLY, "Click rally", "TAP THE COW, ALL OF YOU"),
+        Card(Arm.CLICK_RALLY, "Click rally", "everyone click where he's hiding, now"),
     ),
 }
 
@@ -242,6 +338,16 @@ ANNOYED = (
     "not now bot", "bad timing lol", "cant see the callouts", "let him cook",
     "bot read the room", "kinda busy here",
 )
+# What a room says while it is tapping. Mostly about the video rather than the match,
+# because that is what a click rally actually does: it points everyone at the frame — and
+# what is in the frame is a man in a cow mask trying to stand very still.
+TAPPED = (
+    "tapped", "clicked", "found him", "tapping", "right there", "the cow moved",
+    "[emote:1730759:emojiCool]", "we all clicked the same cow lol", "its a wall of red",
+    "im clicking his face", "heatmap goes brrr", "[emote:1730760:emojiCrave]",
+    "chat has spoken", "everyone hit the same pixel", "the eyes gave it away",
+    "third cow from the left", "he blinked i saw it", "that is NOT a cow",
+)
 
 REGULARS = ("mia", "rohan", "nix", "lulu", "jess", "pixelpete", "ash", "kai",
             "sora", "benji", "tanya", "dv8", "moose", "kestrel")
@@ -280,6 +386,11 @@ class Scenario:
         controller: Controller | None = None,
     ):
         self._rng = random.Random(seed)
+        # The video draws from its own stream, deliberately. A tap is not a chat event and
+        # must not move one: sharing `_rng` meant every change to how the map is generated
+        # reshuffled the whole session — different cards, different outcomes, a different
+        # ledger — from a room that hadn't changed at all.
+        self._click_rng = random.Random(seed ^ 0xC0FFEE)
         self._store = store
         self._hub = hub
         self._bandit = bandit
@@ -333,6 +444,10 @@ class Scenario:
         self.completed = False
         self.interventions = 0
         self.match = 1
+        self.clicks = 0  # taps on the video this session, the map's own counter
+        # Set when the story wants the runner to stop the clock — see the showcase notes
+        # above. The runner clears it; nothing here resumes on its own.
+        self.hold = False
 
         self._phase_index = 0
         self._phase = MATCH[0]
@@ -343,6 +458,19 @@ class Scenario:
         self._next_tick = TICK_S
         self._next_chat_at = 0.0
         self._schedule_chat()
+        # The click map's own state: how many viewers are tapping the video, and until when.
+        # Zero until a rally lands, which is the only thing that ever sets it.
+        self._click_boost = 0.0
+        self._click_until = 0.0
+        self._next_clicks_at = CLICK_TICK_S
+        # The one scripted beat. The hold is owed to the *first* click rally of the run,
+        # whoever chose it: one the bandit plays on its own is the same thing worth
+        # stopping on as one we asked for, and letting it go by means the stream runs on
+        # into a quiz while the map everyone is looking at is still red.
+        self._hold_owed = True
+        self._showcase_asked = False
+        self._showcase_ready_at: float | None = None
+        self._hold_at = float("inf")
         self._replies: list[tuple[float, str, str]] = []
         self._recent: deque[str] = deque(maxlen=8)
         # What the controller said into chat during the tick we are inside, collected so
@@ -375,6 +503,7 @@ class Scenario:
             "state": self.state,
             "decisions": self.decisions,
             "interventions": self.interventions,
+            "clicks": self.clicks,
         }
 
     def step(self, dt_s: float) -> list[EventEnvelope]:
@@ -407,7 +536,10 @@ class Scenario:
     # --- the clock -------------------------------------------------------------------
 
     def _next_due(self) -> float:
-        upcoming = [self._phase_ends_at, self._next_chat_at, self._next_tick]
+        upcoming = [
+            self._phase_ends_at, self._next_chat_at, self._next_tick, self._next_clicks_at,
+            self._hold_at,
+        ]
         if self._replies:
             upcoming.append(self._replies[0][0])
         return min(upcoming)
@@ -425,9 +557,14 @@ class Scenario:
             speaker = self._rng.choices(self.personas, self._weights)[0]
             events.append(self._say(speaker.name, self._rng.choice(CHATTER[self._phase.kind])))
             self._schedule_chat()
+        if self.t >= self._next_clicks_at:
+            self._emit_clicks()
         if self.t >= self._next_tick:
             self._next_tick += TICK_S
             events.extend(self._decide())
+        if self.t >= self._hold_at:
+            self._hold_at = float("inf")
+            self.hold = True
         return events
 
     def _next_phase(self) -> None:
@@ -449,6 +586,83 @@ class Scenario:
         rate = BASE_PER_MINUTE * self._phase.heat * self._mood * chill
         self._next_chat_at = self.t + max(0.05, self._rng.expovariate(rate / 60.0))
 
+    # --- the video ---------------------------------------------------------------------
+
+    def _emit_clicks(self) -> None:
+        """Publish the taps that landed on the video since the last batch.
+
+        Batched rather than sent one at a time: a click is a few bytes and a frame is not,
+        and the map is a density, so nothing is lost by delivering two virtual seconds of
+        them together. They go straight to the hub and are deliberately kept out of both
+        the `EventStore` and the replayable controller history — a tap is not a chat event
+        and must never become one in the measurement, and a heatmap that replayed an hour
+        of clicks to a tab opened late would show a session's worth of attention as if it
+        were happening now.
+        """
+        self._next_clicks_at = self.t + CLICK_TICK_S
+        if self.t >= self._click_until:
+            return
+        rate = self._click_boost * TAPS_PER_MINUTE * self._phase.heat / 60.0
+        count = self._sample(rate * CLICK_TICK_S)
+        if not count:
+            return
+        self.clicks += count
+        self._hub.publish(
+            EventEnvelope(
+                type="controller.clicks",
+                version="1",
+                message_id=uuid.uuid4().hex,
+                timestamp=_iso(self.now),
+                payload={
+                    "type": "clicks",
+                    "ts": _iso(self.now),
+                    # No "rallying" flag alongside them: a rally is the only thing that
+                    # sends this frame at all, so the arrival of one *is* the flag. A field
+                    # that is always true tells a reader nothing and latches whatever it is
+                    # assigned to — it left the client's "chat is tapping" badge up for the
+                    # rest of the run, because nothing was ever going to set it back.
+                    "points": [self._click() for _ in range(count)],
+                },
+            )
+        )
+
+    def _click(self) -> list[float]:
+        """One tap, in the normalised frame coordinates the client renders in."""
+        if self._click_rng.random() < RALLY_FOCUS:
+            return self._near(*TARGET, RALLY_SPREAD)
+        return self._anywhere()
+
+    def _near(self, x: float, y: float, spread: float) -> list[float]:
+        return [
+            round(_clamp01(self._click_rng.gauss(x, spread)), 4),
+            round(_clamp01(self._click_rng.gauss(y, spread)), 4),
+        ]
+
+    def _anywhere(self) -> list[float]:
+        """Someone clicking the video for no particular reason, which people do."""
+        return [round(self._click_rng.random(), 4), round(self._click_rng.random(), 4)]
+
+    def _sample(self, expected: float) -> int:
+        """A count around `expected`: the whole part, the fraction as a coin flip, and
+        enough spread that no two bursts are the same size."""
+        whole = int(expected)
+        if self._click_rng.random() < expected - whole:
+            whole += 1
+        return max(0, round(self._click_rng.gauss(whole, whole**0.5 / 2)))
+
+    def _click_response(self, arm: Arm, responders: int) -> None:
+        """A click rally that landed points the room at the frame, and that is the half of
+        the answer that comes from people who never type.
+
+        Nothing else touches the map — the other arms ask for something typed, and a rally
+        nobody answered leaves the video exactly as empty as it found it, which is what a
+        flop should look like on screen as well as in the ledger.
+        """
+        if arm is not Arm.CLICK_RALLY or responders <= 0:
+            return
+        self._click_boost = responders * TAPPERS_PER_RESPONDER
+        self._click_until = self.t + RESPONSE_WINDOW_S
+
     # --- the decision loop -----------------------------------------------------------
 
     def _decide(self) -> list[EventEnvelope]:
@@ -464,8 +678,43 @@ class Scenario:
         self._context.viewer_count = self.viewers
         self.state = self._monitor.classify(self._monitor.measure(now))
         self._spoken = []
+        self._ask_for_the_showcase(now)
         self._controller.tick(now, may_act=self._may_act())
         return self._spoken
+
+    def _ask_for_the_showcase(self, now: float) -> None:
+        """The one beat we ask for rather than wait for — see the showcase notes above.
+
+        Retried every tick until it lands, because the rails are real: a cooldown, an open
+        window or the hourly cap can refuse it, and the answer to being refused is to ask
+        again on the next tick rather than to take a rail off for the demo.
+        """
+        if self._showcase_asked or self.t < SHOWCASE_AT:
+            return
+        # Switched off is switched off, and it ships that way: the streamer turning the arm
+        # on is what starts this beat, so everything below waits on them.
+        if self._controller.autonomy.get(Arm.CLICK_RALLY, Autonomy.OFF) is Autonomy.OFF:
+            return
+        if self._showcase_ready_at is None:
+            self._showcase_ready_at = self.t
+        # ...and not until the result of it could be read. Early in a run there is no quiet
+        # window to difference against, so a rally fired then lands a spectacular map next
+        # to a row that says `can't tell` — the one sentence a demo cannot afford. Waiting
+        # costs nothing: the ask is retried every tick until the pool can carry a verdict.
+        if not self._controller.can_attribute(self.state):
+            return
+        # Hold out for a quiet room, but not forever — see `SHOWCASE_PATIENCE`. Timed from
+        # when the arm became available rather than from the top of the run, so the wait is
+        # the same length whenever the streamer switches it on.
+        if (
+            self.state is not ChatState.LULL
+            and self.t < self._showcase_ready_at + SHOWCASE_PATIENCE
+        ):
+            return
+        # Nothing is marked done here: `_fire` closes the beat out when the line actually
+        # reaches chat. A cue that was accepted but never delivered leaves the showcase
+        # still owed, and it is asked for again on the next tick.
+        self._controller.cue(Arm.CLICK_RALLY, now)
 
     def _may_act(self) -> bool:
         """Whether the bot gets to spend this decision on the room it can currently see.
@@ -484,6 +733,12 @@ class Scenario:
         self._spoken.append(self._say(BOT_NAME, card.body))
         self.interventions += 1
         self._respond(state, arm, tuple(card.options))
+        if self._hold_owed and arm is Arm.CLICK_RALLY:
+            # This one is the showcase, whether we asked for it or the policy chose it —
+            # so there is nothing left to ask for and nothing left to stop for later.
+            self._hold_owed = False
+            self._showcase_asked = True
+            self._hold_at = self.t + SHOWCASE_HOLD_S
         return True
 
     def _announce(self, text: str) -> None:
@@ -504,10 +759,11 @@ class Scenario:
         """The room answers — or stops talking, which is also an answer."""
         mean = AUDIENCE[state, arm]
         count = round(self._rng.gauss(mean, max(RESPONSE_FLOOR, abs(mean) * RESPONSE_SPREAD)))
+        self._click_response(arm, count)
         if count > 0:
             for who in self._rng.sample(self.personas, min(count, len(self.personas))):
                 at = self.t + self._rng.uniform(2.0, RESPONSE_WINDOW_S)
-                insort(self._replies, (at, who.name, self._reply(who, options)))
+                insort(self._replies, (at, who.name, self._reply(who, arm, options)))
         elif count < 0:
             # Interrupted at the wrong moment, people stop typing rather than argue about it.
             # Suppressing the ambient rate is what makes a backfire show up in the measurement
@@ -519,7 +775,11 @@ class Scenario:
                 at = self.t + self._rng.uniform(2.0, 12.0)
                 insort(self._replies, (at, who.name, self._rng.choice(ANNOYED)))
 
-    def _reply(self, who: Persona, options: tuple[str, ...]) -> str:
+    def _reply(self, who: Persona, arm: Arm, options: tuple[str, ...]) -> str:
+        # A tap is the answer to a click rally; anything typed alongside it is someone
+        # saying they did it, not a ballot — so it gets its own voice.
+        if arm is Arm.CLICK_RALLY:
+            return self._rng.choice(TAPPED)
         if not options:
             return self._rng.choice(RALLY)
         index = min(int(who.lean * len(options)), len(options) - 1)
@@ -586,11 +846,27 @@ def catalogue() -> dict[str, object]:
             for phase in MATCH
         ],
         "cards": sum(len(pool) for pool in CARDS.values()),
+        # The video's own channel. Published for the same reason the table below is: the
+        # heatmap on screen is generated here, on this clock, and anyone can check what it
+        # was drawn from.
+        "clicks": {
+            "only_while_rallying": True,
+            "tappers_per_chat_responder": TAPPERS_PER_RESPONDER,
+            "taps_per_tapper_per_minute": TAPS_PER_MINUTE,
+            "batched_every_s": CLICK_TICK_S,
+            "target": {"x": TARGET[0], "y": TARGET[1], "on_target_share": RALLY_FOCUS},
+            "hidden_from_policy": True,
+        },
         "ground_truth": [
             {"state": state, "arm": arm, "responders": mean, "hidden_from_policy": True}
             for (state, arm), mean in AUDIENCE.items()
         ],
     }
+
+
+def _clamp01(value: float) -> float:
+    """Keep a tap inside the frame — a gaussian around an edge hotspot runs off it."""
+    return min(1.0, max(0.0, value))
 
 
 def _user(username: str) -> dict[str, object]:

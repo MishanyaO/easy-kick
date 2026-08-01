@@ -57,12 +57,15 @@ const SECTIONS: { heading: string; rows: Row[] }[] = [
 
 // Manual fire-rate sliders, not on/off toggles — in `manual` each arm fires at the rate you
 // set and the bandit never runs; in `auto` these are ignored entirely.
-const RATE_ARMS: Arm[] = ["emote_rally", "chat_poll", "quiz"]
+const RATE_ARMS: Arm[] = ["emote_rally", "chat_poll", "quiz", "click_rally"]
 
 // What each toggle-driven arm restores to when turned back on — its real backend default.
 const ON_VALUE: Partial<Record<Arm, Autonomy>> = {
   chat_digest: "auto",
   prediction: "ask",
+  // Straight to `auto`, unlike the others: this one ships switched off, so turning it on
+  // *is* the streamer saying yes — asking them again with a card would be asking twice.
+  click_rally: "auto",
 }
 
 /** Arms that pay participation XP, cheapest effort first. */
@@ -319,6 +322,12 @@ function SettingsDialog({ onClose }: { onClose: () => void }) {
               hint="never posted to chat — a card for you"
               on={autonomy.chat_digest !== "off"}
               onClick={() => toggleArm("chat_digest")}
+            />
+            <ToggleRow
+              label="Click rally"
+              hint="viewers tap the stream"
+              on={autonomy.click_rally !== "off"}
+              onClick={() => toggleArm("click_rally")}
             />
             <ToggleRow
               label="Prediction"

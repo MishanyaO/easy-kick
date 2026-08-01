@@ -97,6 +97,42 @@ async def test_the_scenario_runs_through_the_gym_controls():
         assert sum(cell.pulls for cell in app.state.bandit.cells.values()) == 0
 
 
+async def test_summoning_a_click_rally_fills_the_map_on_a_running_scenario():
+    app, client = dev_client()
+    async with client:
+        # Off the scenario, there is nothing to summon taps onto.
+        assert (await client.post("/dev/gym/click-rally")).status_code == 409
+
+        started = await client.post(
+            "/dev/gym", params={"mode": "scenario", "speed": 100, "seed": 7}
+        )
+        assert started.status_code == 200
+
+        seen: list[dict] = []
+        with app.state.hub.subscribe() as queue:
+            summoned = await client.post("/dev/gym/click-rally")
+            assert summoned.status_code == 200
+            # The streamer's summon puts taps on the video within a beat or two.
+            for _ in range(500):
+                while not queue.empty():
+                    event = queue.get_nowait()
+                    if event.type == "controller.clicks":
+                        seen.append(event.payload)
+                if seen:
+                    break
+                await asyncio.sleep(0.01)
+
+        assert seen and seen[0]["points"]
+
+        # Turning the heatmap back off ends the rally on the streamer's cue.
+        stopped_rally = await client.delete("/dev/gym/click-rally")
+        assert stopped_rally.status_code == 200
+
+        assert (await client.delete("/dev/gym")).json()["status"] == "stopped"
+        # ...and once the scenario is gone there is nothing left to stop.
+        assert (await client.delete("/dev/gym/click-rally")).status_code == 409
+
+
 async def test_a_speedrun_returns_scored_decisions_and_a_posterior_table():
     app, client = dev_client()
     async with client:

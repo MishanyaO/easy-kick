@@ -7,6 +7,7 @@ from functools import lru_cache
 
 import pytest
 
+from easy_kick.awards import AWARD_SIGIL, PROMOTION_SIGIL
 from easy_kick.bandit import Bandit
 from easy_kick.context import StreamContext
 from easy_kick.controller import COOLDOWN_S, TICK_S
@@ -67,6 +68,15 @@ class ClickLog:
 
     def between(self, start: float, end: float) -> list[list[float]]:
         return [p for f in self.frames if start <= f["at"] < end for p in f["points"]]
+
+
+def is_intervention(text: str) -> bool:
+    """The bot's own prompt, as opposed to a participation award.
+
+    Both are `gambit` lines in the same chat, so "what the bot said" no longer means "what
+    the bot asked". Everything about pacing and cooldowns is a claim about the prompts.
+    """
+    return not text.startswith((AWARD_SIGIL, PROMOTION_SIGIL))
 
 
 class Run:
@@ -173,7 +183,11 @@ def test_a_session_is_dozens_of_interventions_across_every_tactic():
 
 def test_the_bot_waits_on_the_room_rather_than_on_a_timer():
     session = run(7)
-    lines = [line for line in session.transcript() if line[1] == BOT_NAME]
+    lines = [
+        line
+        for line in session.transcript()
+        if line[1] == BOT_NAME and is_intervention(line[2])
+    ]
     gaps = session.gaps(lines)
 
     assert len(gaps) >= 20
@@ -233,8 +247,11 @@ def test_a_tally_is_counted_off_what_people_typed_and_nothing_else():
         line for line in session.transcript() if opened <= line[0] <= opened + WINDOW_S
     ]
 
-    # The prompt reaches chat exactly once, as a chat message like anyone else's.
-    assert [text for _, who, text in window if who == BOT_NAME] == [action["body"]]
+    # The prompt reaches chat exactly once, as a chat message like anyone else's. Award
+    # lines are the bot too, but they are not the prompt and carry no ballot.
+    assert [
+        text for _, who, text in window if who == BOT_NAME and is_intervention(text)
+    ] == [action["body"]]
     ballots: dict[str, str] = {}
     for _, who, text in window:
         if who == BOT_NAME:

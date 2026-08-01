@@ -99,6 +99,52 @@ export type ResultFrame = {
   // contract v2 asks for label / replies / held_s / raiders — not yet
 };
 
+/** One viewer's standing in the session's participation ledger. */
+export type Standing = {
+  user: string;
+  xp: number;
+  /** Windows they took part in — one per window at most, so this is not a message count. */
+  awards: number;
+  tier: string;
+  emoji: string;
+};
+
+/**
+ * A closed window paid out participation XP.
+ *
+ * Snapshot-shaped, exactly like `bandit`: `standings` is the whole board every time, never a
+ * delta. The frame history is bounded, so a tab that opens an hour in — or reconnects after
+ * the buffer has rolled over — would silently under-count a running sum of deltas, and a
+ * leaderboard that is quietly wrong is worse than one that is missing.
+ */
+export type AwardFrame = {
+  type: 'award';
+  ts: string;
+  action_id: string;
+  arm: Arm;
+  /** What each participant earned from this window. */
+  xp: number;
+  /** Everyone who took part, earliest first, each with the session total this award left
+   *  them on and the tier that total puts them in — so a per-intervention column needs no
+   *  lookup against `standings` and no second copy of the XP thresholds. */
+  awarded: { user: string; xp: number; tier: string; emoji: string }[];
+  promoted: { user: string; tier: string; emoji: string; xp: number }[];
+  standings: Standing[];
+  /** Everyone who has ever earned anything this session, not just the visible rows. */
+  chatters_ranked: number;
+};
+
+/**
+ * Our award lines are ordinary `gambit` chat messages — on live Kick we post through
+ * `chat:write` and the message returns via the webhook with no room for metadata of our own,
+ * so the leading emoji that makes the line readable in chat is also the only marker the
+ * dashboard has. Mirrors `AWARD_SIGIL`/`PROMOTION_SIGIL` in `awards.py`.
+ *
+ * Only ever trusted together with `username === BOT_NAME` (see `isAward`), so a viewer
+ * opening a message with the same emoji cannot forge one.
+ */
+export const AWARD_SIGILS = ['💰', '🎉'] as const;
+
 /** `chat_digest`: a card-only highlight, never posted to chat and never scored. */
 export type DigestFrame = {
   type: 'digest';
@@ -118,9 +164,16 @@ export type Posterior = {
   pulls: number;
 };
 
-/** One Thompson draw, as it happened. The samplers' numbers are the interesting part: the
- *  policy is "roll one number out of each belief, play the highest", and a wide belief
- *  rolls wild — which is the entire reason the thing explores at all. */
+/**
+ * One Thompson draw, as it happened: the policy is "roll one number out of each belief, play
+ * the highest", and a wide belief rolls wild — which is the entire reason it explores at all.
+ *
+ * Nothing renders this. The "Last call" card that did was removed — a row of raw sampler
+ * draws is the algorithm's arithmetic, and the Tactics cards answer the question a streamer
+ * actually brings ("what works here?") without it. Kept because this file is a record of what
+ * the backend emits, and it does still emit this on every decision frame; deleting it would
+ * leave the next person reading a live frame with an undocumented key.
+ */
 export type LastDecision = {
   state: ChatState;
   /** One Beta draw per *eligible* arm — rails can take arms off the table, so this is a
@@ -194,6 +247,7 @@ export type ControllerFrame = (
   | PollFrame
   | DigestFrame
   | HoldFrame
+  | AwardFrame
   | ControllerResetFrame
 ) & {
   /** Monotonic within one backend-owned gym/live session. */
@@ -205,6 +259,15 @@ export type Frame =
   | ChatFrame
   | ClicksFrame
   | ControllerFrame;
+
+/** What one tactic pays a participant, mirroring `XP_PER_ARM` in `awards.py`. Arms absent
+ *  from this map award nothing — `prediction` happens inside Kick's own widget so we cannot
+ *  see who took part, `chat_digest` is never posted, and `nothing` is the control. */
+export const ARM_XP: Partial<Record<Arm, number>> = {
+  emote_rally: 5,
+  chat_poll: 10,
+  quiz: 15,
+};
 
 /** UI vocabulary derived from his numbers — the backend does not send these. */
 export type VerdictLabel = 'Worked' | 'Neutral' | 'Backfired' | "Can't tell";
@@ -273,6 +336,39 @@ export const ARM_BLURB: Record<Arm, string> = {
   chat_digest: 'summarised what chat was on about — for you, never posted',
   prediction: 'opened a call for chat to back a side',
   click_rally: 'asked chat to tap the stream, and drew what they pointed at',
+};
+
+/**
+ * A prediction is a Kick chat COMMAND, not a chat line.
+ *
+ * `body` for every other arm is a sentence the bot says out loud, and the whole UI prints it
+ * in quotes because that is what it is. `prediction` sends `/prediction Do they clutch it? |
+ * yes | no`, which Kick swallows and turns into its own staking widget — nobody in that
+ * chatroom ever sees those characters. Quoting it puts our slash syntax in the streamer's
+ * mouth, and the pipes read as a formatting bug on every surface that shows a line.
+ *
+ * Parsed here rather than at each call site so the six places that render a body cannot
+ * drift, and returns null on anything that is not the command — an LLM writer replacing
+ * `TEMPLATES` may well phrase it differently, and a half-matched parse must fall back to
+ * printing the body verbatim rather than to inventing a question.
+ */
+export type Prediction = { question: string; outcomes: string[] };
+
+export function asPrediction(body: string | undefined | null): Prediction | null {
+  const m = /^\s*\/prediction\s+(.+)$/is.exec(body ?? '');
+  if (!m) return null;
+  const [question, ...outcomes] = m[1].split('|').map((s) => s.trim()).filter(Boolean);
+  if (!question) return null;
+  return { question, outcomes };
+}
+
+/** What a body says, with the command syntax stripped. */
+export const lineText = (body: string) => asPrediction(body)?.question ?? body;
+
+/** The same, quoted — but only when it is a line somebody actually said in chat. */
+export const lineQuoted = (body: string) => {
+  const p = asPrediction(body);
+  return p ? p.question : `“${body}”`;
 };
 
 /** The chat state as a clause in a sentence, rather than a chip. */

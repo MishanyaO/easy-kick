@@ -10,9 +10,11 @@
 // than one that keeps growing under your cursor.
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { X } from 'lucide-react';
-import type { ChatFrame, PollFrame } from '../types';
-import { BOT_NAME, type ClosedPoll } from '../useGambit';
+import type { ChatFrame, PollFrame, Prediction } from '../types';
+import { asPrediction } from '../types';
+import { BOT_NAME, isAward, type ClosedPoll } from '../useGambit';
 import { emoteSrc } from '../kick/emotes';
+import { LevelBadge, identity } from '../kick/badges';
 
 /**
  * The poll, pinned above the message list in the same slot the plain last-line banner
@@ -127,60 +129,72 @@ function PollBanner({ poll, closesInS, onDismiss }: {
   );
 }
 
+/**
+ * A prediction, in the poll banner's shape minus everything we cannot honestly show.
+ *
+ * `/prediction …` is a command Kick consumes: no viewer sees that text, the staking happens
+ * in Kick's own widget, and no vote ever comes back to us (which is why `prediction` pays no
+ * XP — see `ARM_XP`). So there are no bars and no tally here, deliberately — the outcomes
+ * render as the same unclickable chips a poll uses, and the footer says where the answer
+ * actually is instead of printing a zero that would read as "nobody backed it".
+ */
+function PredictionBanner({ prediction, pinned = false }: {
+  prediction: Prediction;
+  /** In the pinned slot above the feed, rather than inline as a message row. */
+  pinned?: boolean;
+}) {
+  return (
+    <div
+      className={
+        pinned
+          ? 'shrink-0 border-b border-[var(--border)] px-2 py-1.5'
+          : 'mx-2 my-1 rounded-md border-l-2 px-2 py-1.5 lg:mx-3'
+      }
+      style={{
+        background: 'rgba(83,252,24,0.06)',
+        ...(pinned ? {} : { borderColor: 'var(--kick-green)' }),
+      }}
+    >
+      <div className="flex items-center gap-1.5">
+        <span
+          className="rounded px-1 py-px text-[9px] font-bold tracking-wider text-black"
+          style={{ background: 'var(--kick-green)' }}
+        >
+          GAMBIT
+        </span>
+        <span className="text-[9px] uppercase tracking-widest text-[var(--kick-green)]">
+          prediction open
+        </span>
+      </div>
+      <p className="mt-1 text-[12px] font-medium leading-snug text-[var(--text-primary)]">
+        {prediction.question}
+      </p>
+
+      {prediction.outcomes.length > 0 && (
+        <div className="mt-1.5 flex gap-1.5">
+          {prediction.outcomes.map((outcome) => (
+            <span
+              key={outcome}
+              className="flex-1 truncate rounded-sm border border-[var(--border)] px-2 py-1 text-[12px] font-semibold text-[var(--text-primary)]"
+            >
+              {outcome}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+        viewers stake Channel Points in Kick's widget · we never see who backed which side
+      </p>
+    </div>
+  );
+}
+
 /** Deterministic per-user colour, so the same chatter keeps the same one. */
 function hue(name: string) {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
   return h;
-}
-
-/** A per-user hash (FNV-1a), separate from `hue`, so derived badges don't track name colour. */
-function userHash(name: string) {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < name.length; i++) {
-    h ^= name.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return h >>> 0;
-}
-
-type Role = 'mod' | 'vip' | null;
-
-// Real Kick level emblems, hotlinked from its CDN like `emoteSrc` — only the levels we have UUIDs for.
-const LEVEL_BADGES: Record<number, string> = {
-  1: 'https://ext.cdn.kick.com/chat/badges/1_17be7ee9-9ede-4f58-b6da-a2e1e4b1e56a.png',
-  7: 'https://ext.cdn.kick.com/chat/badges/7_bce852c7-f8c0-43e9-bba1-5ae987199625.png',
-  8: 'https://ext.cdn.kick.com/chat/badges/8_47c056a6-e00e-41dd-a540-df0e10f98329.png',
-  13: 'https://ext.cdn.kick.com/chat/badges/13_984e9f19-a4b7-44e2-8a39-3b240abeddc9.png',
-  14: 'https://ext.cdn.kick.com/chat/badges/14_eb93114d-ac72-4b51-b804-d77545652208.png',
-  15: 'https://ext.cdn.kick.com/chat/badges/15_61050dae-2221-4500-aca7-0d3793fe98e0.png',
-  25: 'https://ext.cdn.kick.com/chat/badges/25_f055d38e-8e80-4a99-8419-467bad3eb1ab.png',
-  31: 'https://ext.cdn.kick.com/chat/badges/31_019f35ce-472a-74da-b3bc-69e3f2363639.png',
-  45: 'https://ext.cdn.kick.com/chat/badges/45_82077115-61cb-4b5d-b036-31f13b96cfeb.png',
-};
-const LEVELS = [1, 7, 8, 13, 14, 15, 25, 31, 45]; // low→high, so the pick reads as a ladder
-
-/**
- * Level, role, and sub for a chatter — stable across their messages. Derived, not from the
- * wire: the gym sends no badges. Server `is_sub`/`is_mod` still win in `Row`.
- */
-function identity(name: string): { level: number | null; role: Role; sub: boolean } {
-  const h = userHash(name);
-  const r = h % 100;
-  const role: Role = r < 3 ? 'mod' : r < 11 ? 'vip' : null; // ~3% mods, ~8% VIPs
-  const sub = ((h >>> 3) % 100) < 16;
-  const show = ((h >>> 8) % 100) < 38; // only some carry a visible level
-  const draw = ((h >>> 15) % 1000) / 1000;
-  const level = show ? LEVELS[Math.floor(draw * draw * LEVELS.length)] : null; // squared: skews low
-  return { level, role, sub };
-}
-
-function LevelBadge({ level }: { level: number }) {
-  return (
-    <span className="inline-flex size-[1.35em] shrink-0 items-center" title={`Level ${level}`}>
-      <img className="size-full" alt={`Level ${level}`} src={LEVEL_BADGES[level]} draggable={false} />
-    </span>
-  );
 }
 
 /** Kick's VIP crown, used verbatim from the chatroom markup. */
@@ -279,9 +293,44 @@ function Body({ text }: { text: string }) {
   return <>{out}</>;
 }
 
+/**
+ * A participation award, in the shape of a system message rather than a chat line.
+ *
+ * Deliberately distinct from the GAMBIT intervention block above: an intervention is us
+ * asking chat for something, an award is chat being thanked for giving it. Rendering both
+ * identically would make the reward read as one more thing the bot wants.
+ *
+ * Centred, full-bleed and quiet — the visual language every chat client uses for "this is
+ * the room talking about itself", not "someone said this".
+ */
+function AwardRow({ m }: { m: ChatFrame }) {
+  return (
+    <div className="px-2 py-[3px] lg:px-3">
+      <div
+        className="rounded-md border px-2.5 py-1.5 text-center"
+        style={{
+          borderColor: 'rgba(83,252,24,0.35)',
+          background:
+            'linear-gradient(90deg, rgba(83,252,24,0.04), rgba(83,252,24,0.12), rgba(83,252,24,0.04))',
+        }}
+      >
+        <p className="text-[12.5px] font-semibold leading-snug text-[var(--kick-green)]">
+          {m.text}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 /** One message in Kick's chatroom style. Shared with the Insights transcript snippet. */
 export function ChatMessageRow({ m, isBot }: { m: ChatFrame; isBot: boolean }) {
+  if (isAward(m)) return <AwardRow m={m} />;
+
   if (isBot) {
+    // A prediction is not a line the bot said, so it does not get the "posted to chat" row.
+    const prediction = asPrediction(m.text);
+    if (prediction) return <PredictionBanner prediction={prediction} />;
+
     return (
       <div
         className="mx-2 my-1 rounded-md border-l-2 px-2 py-1.5 lg:mx-3"
@@ -393,8 +442,16 @@ export default function Chat({
     setFrozen(null);
   };
 
+  // The pinned slot holds whatever our last move was — a prediction command has to become the
+  // widget it opens there too, or the one line the streamer is meant to point at is the one
+  // place our slash syntax is still on screen.
+  const lastBotPrediction = asPrediction(lastBot?.text);
+
   const hasNew = frozen !== null && messages[messages.length - 1]?.id !== frozen[frozen.length - 1]?.id;
-  const botLines = messages.filter((m) => m.username === BOT_NAME).length;
+  // Interventions, not awards. This counter is the ACT step's tally — "our line reached the
+  // same chat everyone else is in" — and an award is a receipt for one of those, so counting
+  // both would double every fire and overstate how often we interrupt.
+  const botLines = messages.filter((m) => m.username === BOT_NAME && !isAward(m)).length;
 
   return (
     <div
@@ -427,6 +484,8 @@ export default function Chat({
         <PollBanner poll={poll} closesInS={poll.closes_in_s} />
       ) : closedPoll ? (
         <PollBanner poll={closedPoll} onDismiss={onDismissPoll} />
+      ) : lastBotPrediction ? (
+        <PredictionBanner prediction={lastBotPrediction} pinned />
       ) : lastBot && (
         <div className="shrink-0 border-b border-[var(--border)] px-2 py-1.5"
           style={{ background: 'rgba(83,252,24,0.06)' }}>

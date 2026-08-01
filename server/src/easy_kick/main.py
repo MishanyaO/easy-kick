@@ -33,8 +33,9 @@ async def _lifespan(app: FastAPI):
     tasks = []
     if app.state.settings.controller_enabled:
         from .controller import run as run_controller
-        from .routes.controller import live_fire
+        from .routes.controller import live_announce, live_fire
         app.state.controller.perform = live_fire(app)
+        app.state.controller.announce = live_announce(app)
         tasks.append(asyncio.create_task(run_controller(app.state.controller)))
         tasks.append(asyncio.create_task(
             poll_channel(app.state.kick, app.state.context,

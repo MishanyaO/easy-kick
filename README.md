@@ -35,6 +35,16 @@ it stays quiet until chat needs something, then offers one action to approve. **
 the ledger — every closed window grouped by outcome, plus a **Tactics** tab showing what the
 bandit has learned per chat state.
 
+When a poll, quiz or emote rally closes, everyone who took part earns XP and the bot says so
+in chat — one line naming who joined in, and a second only when someone crosses a tier. It is
+encouragement aimed at the room, not at the streamer: the point is the viewers who did not
+answer this one. Predictions pay nothing, because they run inside Kick's own widget and we
+cannot see who backed which side. The **Rewards** tab shows one column per intervention —
+who took part and what they are on — and Channel Actions has the switch that stops the
+payouts without stopping the bot. Awards are deliberately invisible to the measurement
+engine — see the note at the top of [awards.py](server/src/easy_kick/awards.py) for why, and
+for what that trade costs.
+
 ## Live mode — real Kick chat
 
 ```bash
@@ -63,7 +73,12 @@ in-memory, so repeat this step after a backend restart.
 ## Query params
 
 - `?kick` mounts the same live surfaces inside a replica of dashboard.kick.com/stream.
-- `?insights` mounts the Review drawer as its own page, at full viewport.
+- `?insights` pops the Insights panel out on its own — the same panel, in its own window,
+  which is what Kick's popout icon means everywhere else on that dashboard. Park it on a
+  second monitor to approve the bot's suggestions without leaving OBS.
+- `?review` is the full report at full viewport: the Actions ledger, Tactics, and Rewards.
+  Different content, so it hangs off its own button in the panel header rather than hiding
+  behind the popout icon.
 
 ---
 

@@ -31,16 +31,17 @@ import { ChevronRight, Radar } from 'lucide-react';
 import type { GambitState } from '../useGambit';
 import {
   ARM_LABEL, NOISE_BAND, STATE_LABEL, STATE_PHRASE, VERDICT_BLURB, VERDICT_COLOR, clock,
-  isControl, labelFor, peopleShort, points, whyUnattributable,
+  isControl, labelFor, lineQuoted, lineText, peopleShort, points, whyUnattributable,
   type Arm, type ChatState, type VerdictLabel,
 } from '../types';
 import InsightsGraph from './InsightsGraph';
 import PolicyMap from './PolicyMap';
+import Rewards from './Rewards';
 import ResultDetail, { type History, type LedgerRow } from './ResultDetail';
 import { LIVE_METRICS } from '../metrics';
 
 type Row = LedgerRow;
-type Tab = 'actions' | 'tactics';
+type Tab = 'actions' | 'tactics' | 'rewards';
 
 /** Which pile a window lands in: the four verdicts, plus the two piles that are not verdicts
  *  — windows that never reached chat, and the ones where staying quiet was the decision. */
@@ -48,9 +49,16 @@ type Section = VerdictLabel | 'unsent' | 'control';
 /** The pivot's row axis. `all` is the totals row, and also the "no state filter" value. */
 type StateKey = 'all' | ChatState;
 
-/** `tactics` stays the state key — the tab is still where you go to ask "what works?" —
- *  but the surface behind it is a map of beliefs now, and "Tactics" undersold it. */
-const TABS: [Tab, string][] = [['actions', 'Actions'], ['tactics', 'Policy map']];
+/** The surface behind `tactics` is a map of beliefs, and it briefly wore the label "Policy
+ *  map" to say so — but that names the implementation, and the question a streamer brings to
+ *  this tab is "what works?". `tactics` was always the state key; the label matches it again. */
+const TABS: [Tab, string][] = [
+  ['actions', 'Actions'],
+  ['tactics', 'Tactics'],
+  // Last, and deliberately so: the first two are what the bot learned, this is what the
+  // room earned. Different subject, and the smaller of the two claims.
+  ['rewards', 'Rewards'],
+];
 
 const STATES: ChatState[] = ['lull', 'steady', 'spike'];
 /** A tactic needs this many tries in a state before its average is worth reading aloud. */
@@ -424,8 +432,8 @@ function Entry({ r, history, bandit, chat, open, onToggle }: {
           {ARM_LABEL[r.arm]}
         </td>
         <td className={`${CELL} truncate text-body text-[var(--text-primary)]`}
-          title={r.action?.body ?? undefined}>
-          {r.action?.body ? `“${r.action.body}”` : (
+          title={r.action?.body ? lineText(r.action.body) : undefined}>
+          {r.action?.body ? lineQuoted(r.action.body) : (
             <span className="text-[var(--text-muted)]">
               {control ? 'chose not to intervene' : r.outcome.replace('_', ' ')}
             </span>
@@ -542,7 +550,12 @@ export default function Review({ s }: { s: GambitState }) {
     // the columns stay named however far down you go — which was the only thing the inner
     // scroller was actually buying.
     <div>
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-2">
+      {/* Centred, not baseline-aligned. Baseline puts the figure's baseline on the *first*
+          line of the two beside it, so the count hangs below the number and the whole block
+          rides high — and it did the same to the tab group, which is a bordered box and has
+          no business sharing a baseline with 32px type. Centring is the only one of the
+          three that reads as one row. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <span className="tnum text-hero font-bold leading-none" style={{ color: liftTint(totalLift) }}>
           {points(totalLift)}
         </span>
@@ -606,7 +619,9 @@ export default function Review({ s }: { s: GambitState }) {
         />
       </div>
 
-      {tab === 'tactics' ? (
+      {tab === 'rewards' ? (
+        <Rewards s={s} />
+      ) : tab === 'tactics' ? (
         <div className="mt-4"><PolicyMap s={s} /></div>
       ) : s.results.length === 0 ? (
         // Before the pivot, not under it: a table of zeroes reads as a broken dashboard,

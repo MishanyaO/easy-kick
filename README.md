@@ -16,15 +16,11 @@ cd server && uv sync && cp .env.example .env && cd ..
 ## Simulator mode — no Kick account needed (in root directory)
 
 ```bash
-pnpm dev:simulator
+pnpm dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173), pick **Training**, and hit **Start**. A
-simulated audience of 120 personas reacts to what the bot does, and the controller runs the
-real loop against it — nothing about the decisions or the measurement is faked. (Training is
-the `gym` mode on the wire; the UI calls it what it is for.)
-
-For a presentation, select **Story** instead. It plays two virtual hours of one ranked session
+Open [http://localhost:5173](http://localhost:5173) and hit **Start**. It plays two virtual
+hours of one ranked session
 with chat that reads like a room watching a match — around forty interventions, all of them
 decided by Thompson sampling on the state the room is actually in, none of them on a timer.
 Nothing about the show is scripted: the arc, the dialogue, who answers a poll and how well it
@@ -61,7 +57,7 @@ and chat write. Put the client ID, secret, both URLs, broadcaster ID, and a
 `VITE_CONTROL_API_KEY`.
 
 ```bash
-pnpm dev
+pnpm dev:live
 ```
 
 Then authorize once — open `<ngrok-url>/auth/login`, approve, and:

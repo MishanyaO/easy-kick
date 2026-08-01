@@ -397,6 +397,35 @@ export const betaSd = (alpha: number, beta: number) =>
 /** One (state, arm) cell of the policy table. */
 export const cellKey = (state: ChatState, arm: Arm) => `${state}|${arm}`;
 
+/** Lanczos g=7, n=9 — the usual coefficients, accurate to ~15 digits.
+ *
+ *  No reflection branch for z < 0.5: α and β are seeded at the 1.0 prior and only ever
+ *  decay back toward it (`PRIOR` in bandit.py), so nothing here is ever called below 1. */
+const LANCZOS = [
+  0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+  771.32342877765313, -176.61502916214059, 12.507343278686905,
+  -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7,
+];
+
+function lgamma(z: number): number {
+  const w = z - 1;
+  let x = LANCZOS[0];
+  for (let i = 1; i < LANCZOS.length; i++) x += LANCZOS[i] / (w + i);
+  const t = w + 7.5;
+  return 0.5 * Math.log(2 * Math.PI) + (w + 0.5) * Math.log(t) - t + Math.log(x);
+}
+
+/**
+ * The Beta(α, β) density at x, in logs.
+ *
+ * The normalising 1/B(α, β) is the whole reason this exists rather than the one-line
+ * shape x^(α−1)(1−x)^(β−1). Drop it and a *narrower* posterior draws a *lower* peak — the
+ * story exactly backwards, since a sharpening curve is the thing worth looking at.
+ */
+export const betaLogPdf = (x: number, alpha: number, beta: number) =>
+  (alpha - 1) * Math.log(x) + (beta - 1) * Math.log(1 - x)
+  + lgamma(alpha + beta) - lgamma(alpha) - lgamma(beta);
+
 /** Standard normal CDF — Abramowitz & Stegun 26.2.17, accurate to ~7e-8. */
 function phi(z: number): number {
   const t = 1 / (1 + 0.2316419 * Math.abs(z));

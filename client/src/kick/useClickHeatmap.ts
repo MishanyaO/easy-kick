@@ -5,18 +5,21 @@ import { useEffect, useState } from 'react';
  *  renderer fades a blob out over its age. */
 export type Point = { x: number; y: number; born: number };
 
-/** How long a click takes to fade from full intensity to gone, in ms. The
- *  renderer scales each blob by its remaining life; here we drop points once
- *  they're fully faded so the array stays small. Tunable. */
-export const FADE_MS = 4500;
+/** How long a click takes to fade from full intensity to gone, in ms. Also sets
+ *  how long the map takes to build to steady state, so it's long enough that the
+ *  hotspot ramps up gradually — like a room slowly noticing something — rather
+ *  than snapping to full. The renderer scales each blob by its remaining life;
+ *  here we drop points once they're fully faded so the array stays small. */
+export const FADE_MS = 12000;
 
 /** Hard safety cap on live points. With the fade above and the mock click rate
  *  the steady state is a few dozen, so this is only a runaway guard. */
 const MAX_POINTS = 4000;
 
-/** How many mock clicks arrive per tick, and how often. */
-const CLICKS_PER_TICK = 4;
-const TICK_MS = 350;
+/** How many mock clicks arrive per tick, and how often. Kept to a slow trickle
+ *  (~1–2 clicks/sec) so it reads like real viewers reacting, not a burst. */
+const CLICKS_PER_TICK = 1;
+const TICK_MS = 700;
 
 /** The hot spot the mock audience keeps clicking — 20% across, 30% down. Most
  *  clicks land here so it builds into an obvious warm core. */

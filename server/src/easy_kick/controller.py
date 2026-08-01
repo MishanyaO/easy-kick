@@ -49,6 +49,7 @@ TICK_S = 5.0
 # boundary would leave it to float comparison.
 COOLDOWN_S = CONTAMINATION_S + TICK_S
 ARM_CAP_PER_HOUR = 4
+DIGEST_CAP_PER_HOUR = 30
 PROMOTE_AFTER_APPROVALS = 5
 SCAN_LIMIT = 200  # how far back the copy helpers look for a question or a new chatter
 SUGGESTION_TTL_S = 60.0
@@ -99,7 +100,7 @@ TEMPLATES = {
     Arm.PREDICTION: Card("Prediction", "/prediction Do they clutch it? | yes | no", []),
     Arm.CLICK_RALLY: Card("Click rally", "tap the stream where you're looking", []),
     Arm.CHAT_DIGEST: Card(
-        "Chat digest", "a question worth answering is getting buried", []
+        "Chat digest", "a recurring chat moment is getting buried", []
     ),
 }
 
@@ -168,6 +169,7 @@ class Controller:
         self._window: Window | None = None
         self._card: Card | None = None
         self._fires: deque[tuple[float, Arm]] = deque()
+        self._digested: deque[str] = deque(maxlen=30)
         self._seen_category_change: float | None = None
 
     def tick(self, now: float, *, may_act: bool = True) -> None:
@@ -210,16 +212,14 @@ class Controller:
             or not self._ready(now)
         ):
             return
-        # Bandit-adjacent: `chat_digest` never touches chat and is never scored, so it isn't
-        # one of the arms Thompson sampling competes over — but it still shares the cooldown
-        # and hourly cap, so it can't collide with a fired arm's window.
+        # `chat_digest` never touches chat or opens a window, so it can accompany a normal
+        # action instead of starving the poll/quiz pools.
         if (
             self.autonomy.get(Arm.CHAT_DIGEST) is not Autonomy.OFF
             and not self._capped(Arm.CHAT_DIGEST, now)
-            and (highlight := _buried_highlight(self._store))
+            and (highlight := _buried_highlight(self._store, self._digested))
         ):
             self._fire_digest(highlight, now)
-            return
         if self.mode is Mode.MANUAL:
             self._manual_tick(state, metrics, now)
             return
@@ -401,7 +401,8 @@ class Controller:
     def _capped(self, arm: Arm, now: float) -> bool:
         while self._fires and now - self._fires[0][0] > 3600:
             self._fires.popleft()
-        return sum(a == arm for _, a in self._fires) >= ARM_CAP_PER_HOUR
+        cap = DIGEST_CAP_PER_HOUR if arm is Arm.CHAT_DIGEST else ARM_CAP_PER_HOUR
+        return sum(a == arm for _, a in self._fires) >= cap
 
     def _eligible_arms(self, now: float) -> tuple[Arm, ...]:
         """The exact choice set Thompson sampling and propensity logging both see."""
@@ -548,6 +549,7 @@ class Controller:
         """Card-only: never calls `perform`, never opens a scored window."""
         self._fires.append((now, Arm.CHAT_DIGEST))
         who, text = highlight
+        self._digested.append(_normalise(text))
         card = Card("Chat digest", f"@{who}: {text}", [])
         self._emit("controller.digest", _digest(card, highlight, now))
 
@@ -933,11 +935,12 @@ def _evidence(bandit) -> int:
     return sum(cell.pulls for cell in bandit.cells.values())
 
 
-def _buried_highlight(store: EventStore) -> tuple[str, str] | None:
-    """A question several people are asking — easy to miss in a fast-moving chat.
+def _buried_highlight(
+    store: EventStore, excluded: set[str] | deque[str] = ()
+) -> tuple[str, str] | None:
+    """A recurring chat moment — easy to miss in a fast-moving chat.
 
-    Generalizes what used to be `question_relay`'s "the newest question" into "the question
-    with the most independent askers", which is what makes it worth surfacing on a digest
+    Picks the message with the most independent chatters, which makes it worth surfacing on a digest
     instead of reacting to a single message.
     """
     askers: dict[str, set[str]] = {}
@@ -946,18 +949,23 @@ def _buried_highlight(store: EventStore) -> tuple[str, str] | None:
         if i >= SCAN_LIMIT:
             break
         content = (ev.payload.get("content") or "").strip()
-        if ev.type != EventType.CHAT_MESSAGE_SENT or not content.endswith("?"):
+        if (
+            ev.type != EventType.CHAT_MESSAGE_SENT
+            or not content
+            or "[emote:" in content
+        ):
             continue
         who = ev.username("sender")
-        if who == BOT_NAME:  # our own line is not a buried question
+        if who == BOT_NAME:  # our own line is not a chat highlight
             continue
         key = _normalise(content)
-        # Distinct askers, not messages. Counting messages made one impatient person
-        # typing "song id?" three times look exactly like a room that wants an answer,
-        # and it is the second kind that is worth taking the streamer's attention for.
+        # Distinct chatters, not messages: one person spamming does not make a moment.
         askers.setdefault(key, set()).add(who or "someone")
         first_seen.setdefault(key, (who or "someone", content))
-    recurring = [key for key, people in askers.items() if len(people) >= 2]
+    recurring = [
+        key for key, people in askers.items()
+        if len(people) >= 2 and key not in excluded
+    ]
     if not recurring:
         return None
     return first_seen[max(recurring, key=lambda key: len(askers[key]))]

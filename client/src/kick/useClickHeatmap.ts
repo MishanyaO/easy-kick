@@ -21,9 +21,9 @@ const MAX_POINTS = 4000;
 const CLICKS_PER_TICK = 1;
 const TICK_MS = 700;
 
-/** The hot spot the mock audience keeps clicking — 20% across, 30% down. Most
+/** The hot spot the mock audience keeps clicking — 22.5% across, 30% down. Most
  *  clicks land here so it builds into an obvious warm core. */
-const PRIMARY = { x: 0.2, y: 0.3 };
+const PRIMARY = { x: 0.225, y: 0.3 };
 /** Fraction of mock clicks that land near PRIMARY; the rest are scattered
  *  random clicks across the frame. */
 const PRIMARY_FRACTION = 0.7;

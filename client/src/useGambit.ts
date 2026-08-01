@@ -258,14 +258,11 @@ function reduce(s: GambitState, m: Msg): GambitState {
         banditTrail[cellKey(p.state, p.arm)] =
           next.length > MAX_TRAIL ? next.slice(next.length - MAX_TRAIL) : next;
       }
-      return {
-        ...s,
-        // Only the frame published at a decision carries `last_decision`; the one at window
-        // close does not. Replacing wholesale would blank the draw a second after it
-        // happened, which is precisely the moment worth looking at.
-        bandit: f.last_decision ? f : { ...f, last_decision: s.bandit?.last_decision },
-        banditTrail,
-      };
+      // A plain replace. This used to carry `last_decision` forward across the frames that
+      // do not have one — only the frame published at a decision does — because "Last call"
+      // rendered that draw and would otherwise blank a second after it happened. Nothing
+      // renders it now, so the carry-forward was keeping a field alive for no reader.
+      return { ...s, bandit: f, banditTrail };
     }
 
     case 'digest':

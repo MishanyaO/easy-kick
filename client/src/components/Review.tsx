@@ -550,7 +550,12 @@ export default function Review({ s }: { s: GambitState }) {
     // the columns stay named however far down you go — which was the only thing the inner
     // scroller was actually buying.
     <div>
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-2">
+      {/* Centred, not baseline-aligned. Baseline puts the figure's baseline on the *first*
+          line of the two beside it, so the count hangs below the number and the whole block
+          rides high — and it did the same to the tab group, which is a bordered box and has
+          no business sharing a baseline with 32px type. Centring is the only one of the
+          three that reads as one row. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <span className="tnum text-hero font-bold leading-none" style={{ color: liftTint(totalLift) }}>
           {points(totalLift)}
         </span>

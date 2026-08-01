@@ -163,9 +163,16 @@ export type Posterior = {
   pulls: number;
 };
 
-/** One Thompson draw, as it happened. The samplers' numbers are the interesting part: the
- *  policy is "roll one number out of each belief, play the highest", and a wide belief
- *  rolls wild — which is the entire reason the thing explores at all. */
+/**
+ * One Thompson draw, as it happened: the policy is "roll one number out of each belief, play
+ * the highest", and a wide belief rolls wild — which is the entire reason it explores at all.
+ *
+ * Nothing renders this. The "Last call" card that did was removed — a row of raw sampler
+ * draws is the algorithm's arithmetic, and the Tactics cards answer the question a streamer
+ * actually brings ("what works here?") without it. Kept because this file is a record of what
+ * the backend emits, and it does still emit this on every decision frame; deleting it would
+ * leave the next person reading a live frame with an undocumented key.
+ */
 export type LastDecision = {
   state: ChatState;
   /** One Beta draw per *eligible* arm — rails can take arms off the table, so this is a

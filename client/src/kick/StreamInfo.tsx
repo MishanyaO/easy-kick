@@ -1,4 +1,4 @@
-import { ExternalLink, FlaskConical, Info, Pencil } from 'lucide-react';
+import { ExternalLink, Info, Pencil } from 'lucide-react';
 import Panel, { PanelButton } from './Panel';
 import GymControls from './GymControls';
 import type { GymControlsState } from './useGymControls';
@@ -27,12 +27,14 @@ export default function StreamInfo({ gym }: { gym: GymControlsState }) {
     >
       <p className="text-sm text-white">Kick insights demo</p>
       <div className="mt-2 flex items-center gap-2">
-        {/* Category art stands in as a tinted tile — we have no thumbnail. */}
-        <span className="flex size-9 shrink-0 items-center justify-center rounded bg-gradient-to-br from-[#2b1a4d] to-[#0f1a33] text-[var(--kick-green)]">
-          <FlaskConical size={16} />
-        </span>
+        {/* Category box art. */}
+        <img
+          src="/category-meccha-chameleon.png"
+          alt=""
+          className="size-9 shrink-0 rounded object-cover"
+        />
         <div className="flex min-w-0 flex-col gap-1">
-          <span className="truncate text-sm text-white">Experimental</span>
+          <span className="truncate text-sm text-white">Meccha Chameleon</span>
           <span className="w-fit rounded bg-[var(--bg-elevated)] px-1.5 py-0.5 text-[11px] text-[var(--text-secondary)]">
             English
           </span>

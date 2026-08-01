@@ -12,6 +12,7 @@ import {
   ORIGIN_LABEL,
   VERDICT_COLOR,
   clock,
+  asPrediction,
   labelFor,
   points,
   whyThisArm,
@@ -320,6 +321,7 @@ export default function ResultDetail({
   const tint = VERDICT_COLOR[labelFor(r)]
   const caveat = whyUnattributable(r)
   const why = whyThisArm(bandit, r.state, r.arm)
+  const prediction = asPrediction(r.action?.body)
   const sent = r.outcome === "fired"
   const voted = Object.values(r.votes).some((n) => n > 0)
   const at =
@@ -332,9 +334,26 @@ export default function ResultDetail({
       {/* The line in full — the row above it is truncated, which is the main reason to open
           one at all. No lift figure here: the row is still on screen, showing it. */}
       {r.action?.body ? (
-        <p className="text-body leading-snug text-[var(--text-primary)]">
-          “{r.action.body}”
-        </p>
+        <>
+          <p className="text-body leading-snug text-[var(--text-primary)]">
+            {prediction ? prediction.question : `“${r.action.body}”`}
+          </p>
+          {/* The only record of what the two sides were: a prediction's outcomes live inside
+              the command string, and the "HOW CHAT ANSWERED" tile below can never fire for
+              one — Kick keeps the stakes, so `votes` comes back empty by construction. */}
+          {prediction && prediction.outcomes.length > 0 && (
+            <p className="mt-1 flex flex-wrap gap-1.5">
+              {prediction.outcomes.map((outcome) => (
+                <span
+                  key={outcome}
+                  className="rounded-sm border border-[var(--border)] px-1.5 py-px text-label text-[var(--text-secondary)]"
+                >
+                  {outcome}
+                </span>
+              ))}
+            </p>
+          )}
+        </>
       ) : (
         <p className="text-body italic text-[var(--text-muted)]">
           no line recorded

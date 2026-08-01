@@ -292,6 +292,39 @@ export const ARM_BLURB: Record<Arm, string> = {
   prediction: 'opened a call for chat to back a side',
 };
 
+/**
+ * A prediction is a Kick chat COMMAND, not a chat line.
+ *
+ * `body` for every other arm is a sentence the bot says out loud, and the whole UI prints it
+ * in quotes because that is what it is. `prediction` sends `/prediction Do they clutch it? |
+ * yes | no`, which Kick swallows and turns into its own staking widget — nobody in that
+ * chatroom ever sees those characters. Quoting it puts our slash syntax in the streamer's
+ * mouth, and the pipes read as a formatting bug on every surface that shows a line.
+ *
+ * Parsed here rather than at each call site so the six places that render a body cannot
+ * drift, and returns null on anything that is not the command — an LLM writer replacing
+ * `TEMPLATES` may well phrase it differently, and a half-matched parse must fall back to
+ * printing the body verbatim rather than to inventing a question.
+ */
+export type Prediction = { question: string; outcomes: string[] };
+
+export function asPrediction(body: string | undefined | null): Prediction | null {
+  const m = /^\s*\/prediction\s+(.+)$/is.exec(body ?? '');
+  if (!m) return null;
+  const [question, ...outcomes] = m[1].split('|').map((s) => s.trim()).filter(Boolean);
+  if (!question) return null;
+  return { question, outcomes };
+}
+
+/** What a body says, with the command syntax stripped. */
+export const lineText = (body: string) => asPrediction(body)?.question ?? body;
+
+/** The same, quoted — but only when it is a line somebody actually said in chat. */
+export const lineQuoted = (body: string) => {
+  const p = asPrediction(body);
+  return p ? p.question : `“${body}”`;
+};
+
 /** The chat state as a clause in a sentence, rather than a chip. */
 export const STATE_PHRASE: Record<ChatState, string> = {
   lull: 'chat had gone quiet',

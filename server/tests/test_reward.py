@@ -10,11 +10,13 @@ class StubMonitor:
 
     def __init__(self, participation: float = 0.10):
         self.participation = participation
+        self.chatters: frozenset[str] = frozenset()
 
-    def measure(self, now: float) -> Metrics:
-        return Metrics(ts=now, unique_chatters=0, msgs_per_min=0.0, redemptions=0,
-                       kicks_gifted=0, follows=0, viewer_count=1000,
-                       participation=self.participation)
+    def measure(self, now: float, window_s: float | None = None) -> Metrics:
+        return Metrics(ts=now, unique_chatters=len(self.chatters), msgs_per_min=0.0,
+                       redemptions=0, kicks_gifted=0, follows=0, viewer_count=1000,
+                       participation=self.participation,
+                       window_s=window_s or WINDOW_S, chatters=self.chatters)
 
 
 def close_window(book: RewardBook, monitor: StubMonitor, at: float, arm: Arm,
@@ -148,3 +150,78 @@ def test_a_window_with_a_real_control_behind_it_is_attributable():
 
     assert outcome.controls == 1
     assert outcome.contaminated is None
+
+
+def test_new_voices_score_above_the_same_people_talking_more():
+    """Chat churns, so a flat headcount hides the viewers an intervention actually pulled in.
+
+    Both windows move participation by the same amount; only one of them did it with people
+    who were not talking before.
+    """
+    monitor = StubMonitor()
+    book = RewardBook(monitor)
+
+    monitor.chatters = frozenset({"id:1", "id:2"})
+    window = book.open("regulars", ChatState.STEADY, Arm.EMOTE_RALLY, 1000, fired=True)
+    monitor.participation = 0.12
+    same_crowd = book.close(window, 1000 + WINDOW_S)
+
+    monitor.participation, monitor.chatters = 0.10, frozenset({"id:1", "id:2"})
+    window = book.open("newcomers", ChatState.STEADY, Arm.EMOTE_RALLY, 3000, fired=True)
+    monitor.participation = 0.12
+    monitor.chatters = frozenset({"id:1", "id:2", "id:3", "id:4"})
+    fresh_voices = book.close(window, 3000 + WINDOW_S)
+
+    assert fresh_voices.activated == 2 and same_crowd.activated == 0
+    assert fresh_voices.reward > same_crowd.reward
+
+
+def test_answering_the_question_the_bot_asked_counts_toward_its_score():
+    """The one signal here that is attributable by construction rather than by timing."""
+    monitor = StubMonitor()
+    book = RewardBook(monitor)
+
+    window = book.open("quiet", ChatState.STEADY, Arm.CHAT_POLL, 1000, fired=True)
+    ignored = book.close(window, 1000 + WINDOW_S, voters=0)
+    window = book.open("answered", ChatState.STEADY, Arm.CHAT_POLL, 3000, fired=True)
+    answered = book.close(window, 3000 + WINDOW_S, voters=40)
+
+    assert answered.voters == 40
+    assert answered.reward > ignored.reward
+
+
+def test_a_warm_start_restores_the_controls_a_previous_run_bought():
+    """Silence is expensive to collect, and a cold pool cannot attribute anything."""
+    monitor = StubMonitor()
+    book = RewardBook(monitor)
+    for i in range(3):
+        close_window(book, monitor, 1000 + i * 200, Arm.NOTHING, before=0.08, after=0.10)
+
+    fresh = RewardBook(StubMonitor())
+    fresh.restore(book.snapshot()["controls"])
+
+    assert fresh._drift(ChatState.STEADY, WINDOW_S) == pytest.approx(
+        book._drift(ChatState.STEADY, WINDOW_S)
+    )
+    assert fresh.control_deficit(ChatState.STEADY) == 0.0
+
+
+def test_a_state_with_no_controls_reports_a_full_deficit():
+    """What the bot reads to decide how much silence it still has to buy."""
+    monitor = StubMonitor()
+    book = RewardBook(monitor)
+
+    assert book.control_deficit(ChatState.STEADY) == 1.0
+    close_window(book, monitor, 1000, Arm.NOTHING, before=0.08, after=0.10)
+    assert book.control_deficit(ChatState.STEADY) < 1.0
+
+
+def test_an_arms_window_can_be_wider_than_the_default():
+    """The width is per-arm, and the pool a control lands in follows the width it was
+    measured at — a 60s quiet window is not a control for a wider treatment."""
+    monitor = StubMonitor()
+    book = RewardBook(monitor)
+
+    window = book.open("wide", ChatState.STEADY, Arm.QUIZ, 1000, fired=True, window_s=90.0)
+
+    assert window.length == 90.0 and window.closes_at == 1090.0

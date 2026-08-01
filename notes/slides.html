@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FORLOOP — Gambit</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --ink: #ffffff;
+    --dim: rgba(255,255,255,.62);
+    --faint: rgba(255,255,255,.28);
+    --red: #c2172b;
+    --orange: #f4622a;
+  }
+
+  body {
+    background: #12060a;
+    color: var(--ink);
+    font-family: ui-sans-serif, -apple-system, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* event-deck gradient: deep red core bleeding to orange */
+  .bg {
+    position: fixed; inset: 0; z-index: 0;
+    background:
+      radial-gradient(70% 90% at 18% 15%, #7d0f2a 0%, transparent 60%),
+      radial-gradient(90% 110% at 85% 80%, #f4622a 0%, transparent 55%),
+      radial-gradient(120% 120% at 50% 50%, #c2172b 0%, #4a0a18 62%, #12060a 100%);
+  }
+  .bg::after {
+    content: ''; position: absolute; inset: 0;
+    background: radial-gradient(75% 75% at 50% 50%, transparent 40%, rgba(10,3,6,.72) 100%);
+  }
+
+  .slide {
+    display: none;
+    position: relative; z-index: 1;
+    height: 100vh;
+    padding: 9vh 8vw;
+  }
+  .slide.on { display: flex; flex-direction: column; }
+
+  .kicker {
+    font-size: 1.05vw; letter-spacing: .22em; text-transform: uppercase;
+    color: rgba(255,255,255,.55); margin-bottom: 3vh;
+  }
+  h1 {
+    font-size: 4.2vw; line-height: 1.05; font-weight: 700;
+    letter-spacing: -.03em; max-width: 17ch;
+    text-shadow: 0 2px 40px rgba(0,0,0,.35);
+  }
+  h1 em { font-style: normal; color: #ffd9a3; }
+  .sub {
+    margin-top: 2.6vh; font-size: 1.6vw; line-height: 1.4;
+    color: var(--dim); max-width: 34ch;
+  }
+  .art { margin-top: auto; }
+  .num { position: fixed; z-index: 2; bottom: 4vh; right: 8vw; font-size: 1.35vw; font-weight: 600; color: rgba(255,255,255,.55); letter-spacing: .1em; }
+  .team { position: fixed; z-index: 2; bottom: 4vh; left: 8vw; font-size: 1.35vw; font-weight: 700; letter-spacing: .28em; color: rgba(255,255,255,.75); }
+
+  /* ---------- slide 1: the scroll ---------- */
+  .s1 { flex-direction: row !important; align-items: center; gap: 5vw; }
+  .s1 .copy { flex: 1; }
+  .scroller {
+    flex: 0 0 30vw; height: 62vh; overflow: hidden; position: relative;
+    -webkit-mask-image: linear-gradient(180deg, transparent, #000 18%, #000 82%, transparent);
+            mask-image: linear-gradient(180deg, transparent, #000 18%, #000 82%, transparent);
+  }
+  .scroll-track { animation: scroll 14s linear infinite; }
+  @keyframes scroll { to { transform: translateY(-50%); } }
+  .msg {
+    display: flex; gap: .7vw; align-items: baseline;
+    padding: .85vh 1.1vw; font-size: 1.02vw; color: rgba(255,255,255,.42);
+    white-space: nowrap;
+  }
+  .msg b { color: rgba(255,255,255,.72); font-weight: 600; }
+
+  /* ---------- slide 2: the loop ---------- */
+  .s2 { flex-direction: row !important; align-items: center; gap: 4vw; }
+  .s2 .copy { flex: 0 0 34vw; }
+  .loopwrap { flex: 1; display: flex; justify-content: center; }
+  svg.loop { width: 42vw; height: 68vh; overflow: visible; }
+  .ring { fill: none; stroke: rgba(255,255,255,.16); stroke-width: 1.5; }
+  .pulse {
+    fill: none; stroke: #ffd9a3; stroke-width: 3.5; stroke-linecap: round;
+    filter: drop-shadow(0 0 10px rgba(255,217,163,.9));
+    stroke-dasharray: 90 1000;
+    animation: run 6s linear infinite;
+  }
+  @keyframes run { to { stroke-dashoffset: -1090; } }
+
+  .node circle {
+    fill: #2b0810; stroke: rgba(255,255,255,.35); stroke-width: 1.5;
+    animation: lit 6s linear infinite;
+  }
+  .node text.lbl {
+    fill: #fff; font-size: 15px; font-weight: 700; text-anchor: middle;
+    letter-spacing: .12em; text-transform: uppercase;
+    animation: littext 6s linear infinite;
+  }
+  .node text.cap {
+    fill: rgba(255,255,255,.6); font-size: 13px; font-weight: 500; text-anchor: middle;
+  }
+  .n1 circle, .n1 text.lbl { animation-delay: 0s; }
+  .n2 circle, .n2 text.lbl { animation-delay: 1.5s; }
+  .n3 circle, .n3 text.lbl { animation-delay: 3s; }
+  .n4 circle, .n4 text.lbl { animation-delay: 4.5s; }
+  @keyframes lit {
+    0%   { fill: #ffd9a3; stroke: #ffd9a3; }
+    16%  { fill: #ffd9a3; stroke: #ffd9a3; }
+    34%, 100% { fill: #2b0810; stroke: rgba(255,255,255,.35); }
+  }
+  @keyframes littext {
+    0%, 16% { fill: #2b0810; }
+    34%, 100% { fill: #ffffff; }
+  }
+
+  /* ---------- slide 3: why ---------- */
+  .s3 { justify-content: center; }
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.6vw; margin-top: 7vh; }
+  .tile {
+    padding: 3.2vh 1.6vw; border-radius: 14px;
+    background: rgba(255,255,255,.07);
+    border: 1px solid rgba(255,255,255,.14);
+    backdrop-filter: blur(6px);
+  }
+  .tile .lab { font-size: .95vw; letter-spacing: .2em; text-transform: uppercase; color: rgba(255,255,255,.5); }
+  .tile .big { font-size: 2.5vw; font-weight: 700; letter-spacing: -.02em; margin-top: 1.4vh; line-height: 1.1; }
+  .tile .big span { color: #ffd9a3; }
+  .tile .note { margin-top: 1.2vh; font-size: 1.05vw; color: var(--dim); line-height: 1.4; }
+
+  @media print {
+    @page { size: landscape; margin: 0; }
+    body { height: auto; overflow: visible; }
+    .bg { position: absolute; height: 300vh; }
+    .slide { display: flex !important; page-break-after: always; }
+    .num, .team { display: none; }
+    * { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="bg"></div>
+
+<!-- 1 — the problem -->
+<section class="slide on s1">
+  <div class="copy">
+    <div class="kicker">The problem</div>
+    <h1>Chat scrolls.<br><em>Nobody learns from it.</em></h1>
+    <p class="sub">Bots post on a timer, right moment or not. Nothing checks whether it worked. So nothing ever gets better.</p>
+  </div>
+  <div class="scroller">
+    <div class="scroll-track" id="track"></div>
+  </div>
+</section>
+
+<!-- 2 — the loop -->
+<section class="slide s2">
+  <div class="copy">
+    <div class="kicker">Our solution — Gambit</div>
+    <h1>A chat co-host that <em>closes the loop.</em></h1>
+    <p class="sub">It reads the room, acts only when the moment fits, then checks if it actually helped — and remembers.</p>
+  </div>
+  <div class="loopwrap">
+    <svg class="loop" viewBox="-20 -30 500 520">
+      <circle class="ring"  cx="230" cy="230" r="150"/>
+      <circle class="pulse" cx="230" cy="230" r="150" transform="rotate(-90 230 230)"/>
+
+      <g class="node n1">
+        <circle cx="230" cy="80" r="50"/>
+        <text class="lbl" x="230" y="85">READ</text>
+        <text class="cap" x="230" y="-2">what chat is doing</text>
+      </g>
+      <g class="node n2">
+        <circle cx="380" cy="230" r="50"/>
+        <text class="lbl" x="380" y="235">ACT</text>
+        <text class="cap" x="380" y="302">poll · emote · nothing</text>
+      </g>
+      <g class="node n3">
+        <circle cx="230" cy="380" r="50"/>
+        <text class="lbl" x="230" y="385">MEASURE</text>
+        <text class="cap" x="230" y="462">did more people talk?</text>
+      </g>
+      <g class="node n4">
+        <circle cx="80" cy="230" r="50"/>
+        <text class="lbl" x="80" y="235">LEARN</text>
+        <text class="cap" x="80" y="302">update the odds</text>
+      </g>
+    </svg>
+  </div>
+</section>
+
+<!-- 3 — why it matters -->
+<section class="slide s3">
+  <div class="kicker">Why it matters</div>
+  <h1>Every stream makes it <em>smarter.</em></h1>
+  <p class="sub">Not a bot you configure. A co-host that earns its rules from your own channel.</p>
+  <div class="tiles">
+    <div class="tile">
+      <div class="lab">Who it's for</div>
+      <div class="big">Mid-size<br><span>streamers</span></div>
+      <div class="note">Enough chat to learn from. Too much to judge alone, live.</div>
+    </div>
+    <div class="tile">
+      <div class="lab">The number we move</div>
+      <div class="big"><span>~5%</span> talk</div>
+      <div class="note">Of everyone watching. Lifting that is the whole game.</div>
+    </div>
+    <div class="tile">
+      <div class="lab">Ready today</div>
+      <div class="big">Kick API,<br><span>no waiting</span></div>
+      <div class="note">Built on endpoints that already exist. Live demo next.</div>
+    </div>
+  </div>
+</section>
+
+<div class="team">FORLOOP</div>
+<div class="num" id="n">1 / 3</div>
+
+<script>
+  // slide 1 chat noise — duplicated once so the scroll loops seamlessly
+  const LINES = [
+    ['kai_92', 'no way he hit that'],
+    ['mochi', 'LETS GOOO'],
+    ['drewp', '🔥🔥🔥'],
+    ['s1lver', 'anyone here from the last stream'],
+    ['bexx', 'what map is this'],
+    ['nova_rt', 'W'],
+    ['tomjr', 'lag?'],
+    ['pip', 'first time here hi'],
+    ['gg_reed', 'that was clean'],
+    ['zuu', '😭😭'],
+    ['marla', 'who is winning'],
+    ['ovr9k', 'chat is dead lol'],
+    ['finn', 'turn the music up'],
+    ['ky', 'KEKW'],
+    ['dax_', 'been here 2 hours'],
+    ['lune', 'gn everyone'],
+  ];
+  const html = LINES.map(([u, m]) => `<div class="msg"><b>${u}</b>${m}</div>`).join('');
+  track.innerHTML = html + html;
+
+  const s = [...document.querySelectorAll('.slide')];
+  let i = 0;
+  const go = n => {
+    i = (n + s.length) % s.length;
+    s.forEach((el, k) => el.classList.toggle('on', k === i));
+    document.getElementById('n').textContent = `${i + 1} / ${s.length}`;
+  };
+  onkeydown = e => {
+    if (['ArrowRight', ' ', 'ArrowDown'].includes(e.key)) { e.preventDefault(); go(i + 1); }
+    if (['ArrowLeft', 'ArrowUp'].includes(e.key)) { e.preventDefault(); go(i - 1); }
+    if (e.key === 'f') document.body.requestFullscreen();
+  };
+  onclick = e => go(i + (e.clientX < innerWidth / 3 ? -1 : 1));
+</script>
+</body>
+</html>

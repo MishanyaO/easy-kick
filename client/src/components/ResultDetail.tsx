@@ -12,6 +12,7 @@ import {
   whyUnattributable, type ActionFrame, type BanditFrame, type ChatFrame, type ResultFrame,
 } from '../types';
 import { BOT_NAME } from '../useGambit';
+import { ChatMessageRow } from './Chat';
 
 export type LedgerRow = ResultFrame & { action?: ActionFrame; tick: number };
 
@@ -159,25 +160,28 @@ function Transcript({ chat, at }: { chat: ChatFrame[]; at: string }) {
   // messages it has, from some other minute entirely, under a heading that says they are
   // the room around this action — which is worse than showing nothing.
   if (Math.abs(Date.parse(chat[i].ts) - t) > NEAR_S * 1000) return null;
-  const around = chat.slice(Math.max(0, i - SAY_BEFORE), i + SAY_AFTER + 1);
+  const start = Math.max(0, i - SAY_BEFORE);
+  const around = chat.slice(start, i + SAY_AFTER + 1);
+  const split = i - start;
   if (!around.length) return null;
 
   return (
-    <div className="space-y-1">
-      {around.map((m) => {
-        const ours = m.username === BOT_NAME;
+    <div className="w-full max-w-[420px] overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-surface)] py-1">
+      {around.map((m, j) => {
+        const marker = j === split;
         return (
-          <p key={m.id} className="flex gap-2 text-body leading-snug">
-            <span className="w-28 shrink-0 truncate font-semibold"
-              style={{ color: ours ? 'var(--kick-green)' : 'var(--text-secondary)' }}>
-              {m.username}
-            </span>
-            <span className="min-w-0 flex-1"
-              style={{ color: ours ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
-              {/* Emote tokens are for the chat pane's renderer; here they are noise. */}
-              {m.text.replace(/\[emote:\d+:([^\]]+)\]/g, '$1')}
-            </span>
-          </p>
+          <div key={m.id}>
+            {marker && (
+              <div className="flex items-center gap-2 px-2 py-[5px] lg:px-3">
+                <span className="h-px flex-1 bg-[var(--kick-green)]" />
+                <span className="text-label font-semibold text-[var(--kick-green)]">
+                  Selected moment
+                </span>
+                <span className="h-px flex-1 bg-[var(--kick-green)]" />
+              </div>
+            )}
+            <ChatMessageRow m={m} isBot={m.username === BOT_NAME} />
+          </div>
         );
       })}
     </div>
@@ -219,7 +223,7 @@ export default function ResultDetail({ r, h, bandit, chat }: {
       </p>
 
       {sent && (
-        <div className={`mt-2 grid gap-2 ${voted ? 'sm:grid-cols-2' : ''}`}>
+        <div className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(min(100%,300px),420px))] justify-start gap-2">
           <Tile label="CHAT WHILE IT RAN">
             <WindowChart h={h} closeIdx={r.tick} tint={tint} />
           </Tile>
@@ -232,7 +236,7 @@ export default function ResultDetail({ r, h, bandit, chat }: {
       )}
 
       {r.action?.ts && chat.length > 0 && (
-        <div className="mt-2">
+        <div className="mt-2 max-w-[420px]">
           <Tile label="WHAT CHAT WAS SAYING">
             <Transcript chat={chat} at={r.action.ts} />
           </Tile>

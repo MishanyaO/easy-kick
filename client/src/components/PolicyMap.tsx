@@ -277,7 +277,7 @@ function LastCall({ d }: { d: LastDecision }) {
  *  is anything in it. */
 function Empty({ cells }: { cells: number }) {
   return (
-    <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto py-6">
+    <div className="flex justify-center py-10">
       <div className="w-full max-w-[560px] rounded-sm border border-dashed border-[var(--border)] bg-[var(--bg-elevated)] p-6 text-center">
         <div className="mx-auto flex size-11 items-center justify-center rounded-full bg-[var(--bg-surface)] text-[var(--kick-green)]">
           <FlaskConical size={18} />
@@ -324,7 +324,7 @@ export default function PolicyMap({ s }: { s: GambitState }) {
   const posteriors = s.bandit?.posteriors ?? [];
   const at = (state: ChatState, arm: Arm) =>
     posteriors.find((p) => p.state === state && p.arm === arm);
-  // Rows come from the table, never from a list here: the backend explores three tactics
+  // Rows come from the table, never from a list here: the backend defines the tactics
   // plus silence, and a hardcoded list would invent cells the sampler never considers.
   // `nothing` is not a row; it is the 50% line every other row is drawn against.
   const arms = [...new Set(posteriors.map((p) => p.arm))].filter((a) => a !== 'nothing').sort();
@@ -365,7 +365,9 @@ export default function PolicyMap({ s }: { s: GambitState }) {
     .filter((p) => p && p.pulls > 0).length;
 
   return (
-    <div className="@container min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+    // No scroller of its own: the page it sits on is one scrolling document now, and a panel
+    // that scrolls inside a page that scrolls is two wheels for one list.
+    <div className="@container space-y-3">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className="text-label font-bold tracking-[0.2em] text-[var(--text-muted)]">
           WHAT GAMBIT KNOWS
@@ -382,15 +384,15 @@ export default function PolicyMap({ s }: { s: GambitState }) {
         </button>
       </div>
 
-      {/* The question every judge asks within ten seconds of seeing a 3×3, answered in one
+      {/* The question every judge asks within ten seconds of seeing the policy grid, answered in one
           line and folded away again. */}
       {why && (
         <p className="rounded-sm border border-[var(--border)] bg-[var(--bg-surface)] px-3 py-2 text-body leading-relaxed text-[var(--text-secondary)]">
-          Gambit knows six moves; only these three are experiments. Chat digest is written
-          for the streamer and never posted, so chat cannot react to it, and Prediction
-          stakes viewers&rsquo; own points — neither can be scored as a lift in participation,
-          so neither goes through the bandit. The fourth arm is staying quiet, and it is the
-          50% line each of these is drawn against rather than a row of its own.
+          Gambit experiments with these four tactics. Prediction is part of the policy, but
+          it always stops for streamer approval because it stakes viewers&rsquo; own points.
+          Chat digest is written only for the streamer, never posted or scored, so it stays
+          outside the bandit. Staying quiet is the control arm and the 50% line each tactic
+          is drawn against rather than a row of its own.
         </p>
       )}
 

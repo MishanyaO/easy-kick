@@ -49,7 +49,7 @@ async def test_the_scenario_runs_through_the_gym_controls():
     async with client:
         run_sheet = (await client.get("/dev/gym/scenario")).json()
         assert run_sheet["scenario"] == "ranked_run"
-        assert len(run_sheet["ground_truth"]) == 9  # three states × three tactics
+        assert len(run_sheet["ground_truth"]) == 12  # three states × four tactics
 
         started = await client.post(
             "/dev/gym", params={"mode": "scenario", "speed": 100, "seed": 7}
@@ -58,27 +58,31 @@ async def test_the_scenario_runs_through_the_gym_controls():
         assert started.json()["mode"] == "scenario"
         assert started.json()["beat"] == "in queue"
 
-        for _ in range(400):
-            if any(
-                frame["type"] == "action"
-                for frame in app.state.controller_history.snapshot()
-            ):
-                break
-            await asyncio.sleep(0.01)
+        # The story runs through the dashboard's own controller, so it obeys its warmup,
+        # cooldown and hourly caps — the first card is minutes of virtual time in, not
+        # seconds. Wait on the thing being asserted rather than on a fixed budget.
+        async def until(ready, tries: int = 2000) -> None:
+            for _ in range(tries):
+                if ready():
+                    return
+                await asyncio.sleep(0.01)
+
+        frames = app.state.controller_history.snapshot
+        await until(lambda: any(f["type"] == "action" for f in frames()))
 
         status = (await client.get("/dev/gym")).json()
         assert status["scenario"] == "ranked_run"
         assert status["decisions"] > 0
-        assert any(
-            frame["type"] == "action"
-            for frame in app.state.controller_history.snapshot()
-        )
+        assert any(f["type"] == "action" for f in frames())
+        # The rails the dashboard sets are the rails the story runs under: `emote_rally`
+        # defaults to `ask`, so its card stops for the streamer instead of auto-firing.
+        card = next(f for f in frames() if f["type"] == "action")
+        assert card["autonomy"] == Autonomy.ASK
+        assert card["auto_fire"] is False
         # The scenario's evidence lands in the seeded, run-scoped table `stop` throws away.
-        for _ in range(400):
-            if sum(cell.pulls for cell in app.state.bandit.cells.values()) > 0:
-                break
-            await asyncio.sleep(0.01)
-        assert sum(cell.pulls for cell in app.state.bandit.cells.values()) > 0
+        pulls = lambda: sum(cell.pulls for cell in app.state.bandit.cells.values())  # noqa: E731
+        await until(lambda: pulls() > 0)
+        assert pulls() > 0
 
         paused = await client.post("/dev/gym/pause")
         assert paused.json()["status"] == "paused"
@@ -134,6 +138,22 @@ async def test_autonomy_is_human_set_and_read_back():
     assert app.state.controller.enabled is False
 
 
+async def test_prediction_can_be_disabled_but_never_auto_approved():
+    app, client = dev_client()
+    async with client:
+        disabled = await client.put(
+            "/controller/autonomy", json={"autonomy": {"prediction": "off"}}
+        )
+        forced_auto = await client.put(
+            "/controller/autonomy", json={"autonomy": {"prediction": "auto"}}
+        )
+
+    assert disabled.status_code == 200
+    assert app.state.controller.autonomy[Arm.PREDICTION] is Autonomy.OFF
+    assert forced_auto.status_code == 422
+    assert "requires streamer approval" in forced_auto.json()["detail"]
+
+
 async def test_nothing_cannot_be_disabled_through_the_control_surface():
     app, client = dev_client()
     async with client:
@@ -185,7 +205,7 @@ async def test_the_policy_table_reports_what_has_been_learned():
         body = (await client.get("/controller/policy")).json()
 
     assert body["enabled"] is True
-    assert len(body["posteriors"]) == 12  # 4 arms × 3 states
+    assert len(body["posteriors"]) == 15  # 5 arms × 3 states
     assert body["insights"] == []  # nothing learned yet, and we do not pretend otherwise
 
 

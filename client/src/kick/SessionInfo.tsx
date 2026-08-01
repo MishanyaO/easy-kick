@@ -2,8 +2,8 @@ import { ExternalLink } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import Panel, { PanelButton } from './Panel';
 import { StreamIcon } from './icons';
-import type { ContextFrame } from '../types';
 import MultiSpark from '../components/MultiSpark';
+import { LIVE_METRICS } from '../metrics';
 import type { GambitState } from '../useGambit';
 
 /** uptime_s -> HH:MM:SS, the way Kick renders "Time Live". */
@@ -12,32 +12,27 @@ function elapsed(seconds: number): string {
   return `${p(seconds / 3600)}:${p((seconds % 3600) / 60)}:${p(seconds % 60)}`;
 }
 
-const VIEWERS_COLOR = '#6aa9ff';
-const ACTIONS_COLOR = 'var(--warn)';
-const ACTIVE_VIEWERS_COLOR = 'var(--kick-green)';
-
 /**
  * Kick's "Session Info" strip. The cells are Kick's; the numbers are the
- * controller's. Viewers and actions (comments + reactions) used to be their own
- * cells but read better as a graph — it's the one place on the dashboard that
- * shows their shape over time, not just the instant value.
+ * controller's. Viewers, Talking and Activity used to be their own cells but read
+ * better as a graph — it's the one place on the dashboard that shows their shape
+ * over time, not just the instant value.
+ *
+ * The three come from `metrics.ts`, in that order, in those colours, because the
+ * top of Insights shows the same three and the two must not drift apart. There is
+ * no room here for the definitions, so they are the tooltip on each.
  */
 export default function SessionInfo({
-  context,
+  s,
   live,
   speed = 1,
-  viewerSpark,
-  activeViewersSpark,
-  actionsSpark,
 }: {
-  context: ContextFrame | null;
+  s: GambitState;
   live: boolean;
   /** Gym virtual-seconds-per-real-second, so the clock can keep ticking between frames. */
   speed?: number;
-  viewerSpark: GambitState['viewerSpark'];
-  activeViewersSpark: GambitState['activeViewersSpark'];
-  actionsSpark: GambitState['actionsSpark'];
 }) {
+  const context = s.context;
   // Context frames land every few real seconds; interpolating locally between them is
   // what makes "Time Live" look live instead of stepping in visible jumps.
   const anchor = useRef<{ uptime_s: number; atMs: number } | null>(null);
@@ -100,37 +95,20 @@ export default function SessionInfo({
 
         <div className="flex min-w-0 flex-1 flex-col gap-1.5 px-3 py-2.5">
           <div className="flex items-center gap-3 text-xs">
-            <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
-              <span className="size-1.5 rounded-full" style={{ background: VIEWERS_COLOR }} />
-              Viewers
-              <span className="tnum text-white">
-                {context?.viewer_count != null ? context.viewer_count : '-'}
+            {LIVE_METRICS.map((m) => (
+              <span key={m.key} title={m.blurb}
+                className="flex cursor-help items-center gap-1.5 text-[var(--text-secondary)]">
+                <span className="size-1.5 rounded-full" style={{ background: m.color }} />
+                {m.label}
+                <span className="tnum text-white">{m.value(context)}</span>
               </span>
-            </span>
-            <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
-              <span className="size-1.5 rounded-full" style={{ background: ACTIVE_VIEWERS_COLOR }} />
-              {/* `unique_chatters`. "Talking" everywhere, so this panel and the Insights
-                  chart are naming the same number the same way. */}
-              Talking
-              <span className="tnum text-white">
-                {context ? context.unique_chatters : '-'}
-              </span>
-            </span>
-            <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
-              <span className="size-1.5 rounded-full" style={{ background: ACTIONS_COLOR }} />
-              Actions
-              <span className="tnum text-white">
-                {context ? context.actions_per_min.toFixed(1) : '-'}/min
-              </span>
-            </span>
+            ))}
           </div>
           <MultiSpark
             height={26}
-            series={[
-              { data: viewerSpark, color: VIEWERS_COLOR, scaleGroup: 'viewers' },
-              { data: activeViewersSpark, color: ACTIVE_VIEWERS_COLOR, scaleGroup: 'viewers' },
-              { data: actionsSpark, color: ACTIONS_COLOR },
-            ]}
+            series={LIVE_METRICS.map((m) => ({
+              data: m.spark(s), color: m.color, scaleGroup: m.scaleGroup,
+            }))}
           />
         </div>
       </div>

@@ -84,7 +84,7 @@ export default function ApprovalCard({ action, bandit, onDecide, docked = false 
           docked ? 'mt-2 rounded-sm py-1.5 text-xs' : 'mt-4 rounded-lg py-4 text-base'
         }`}
       >
-        Send to chat
+        {action.kind === 'prediction' ? 'Start prediction' : 'Send to chat'}
       </button>
       <div
         className={`flex items-center justify-between gap-2 text-[10px] text-[var(--text-muted)] ${

@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from ..config import PROJECT_ROOT
 from ..controller import TICK_S, Controller, build_stack, hub_publisher
 from ..gym import POLICIES, Gym, simulate
-from ..models import BANDIT_ARMS, Arm, Autonomy, Mode
+from ..models import APPROVAL_ONLY_ARMS, BANDIT_ARMS, Arm, Autonomy, Mode
 from ..scenario import Scenario, catalogue
 from ..security import require_control_key
 
@@ -181,12 +181,16 @@ async def start_gym(request: Request, speed: float = Query(1.0, gt=0, le=100),
             context = request.app.state.context
         state.speed, state.seed, state.mode = speed, seed, mode
         if mode == "scenario":
+            # The dashboard's own controller drives the story, so the rails on screen are
+            # the rails it runs under: an arm left on `ask` raises an approval card,
+            # `manual` hands firing to the sliders, and the kill switch stops it.
             state.gym = Scenario(
                 seed=seed,
                 store=request.app.state.store,
                 hub=request.app.state.hub,
                 bandit=request.app.state.bandit,
                 context=context,
+                controller=request.app.state.controller,
                 publish=hub_publisher(
                     request.app.state.hub, request.app.state.controller_history
                 ),
@@ -263,8 +267,15 @@ async def stop_gym(request: Request) -> dict:
 
 
 def _reset_shared_state(app, *, bandit_seed: int | None = None) -> None:
-    """Rebuild everything the gym touches, the same way `create_app` builds it fresh."""
+    """Rebuild everything the gym touches, the same way `create_app` builds it fresh.
+
+    Everything *measured* has to go — store, posteriors, open window, context — or the next
+    run starts contaminated. The human rails do not: `enabled`, the per-arm autonomy and the
+    manual-mode fire rates are settings the streamer chose in Channel Actions, and wiping
+    them on Start meant an Auto approve set before a run silently did nothing.
+    """
     settings = app.state.settings
+    previous = getattr(app.state, "controller", None)
     app.state.controller_history.reset()
     hub_publisher(app.state.hub, app.state.controller_history)(
         "controller.reset", {"type": "reset"}
@@ -275,6 +286,8 @@ def _reset_shared_state(app, *, bandit_seed: int | None = None) -> None:
         perform=live_fire(app) if settings.controller_enabled else None,
         bandit_seed=bandit_seed,
     )
+    if previous is not None:
+        app.state.controller.adopt_rails(previous)
 
 
 @gym_router.post("/speedrun")
@@ -348,6 +361,16 @@ async def set_autonomy(body: AutonomyUpdate, request: Request) -> dict:
             raise HTTPException(
                 status_code=422,
                 detail="'nothing' must stay enabled to preserve the control group",
+            )
+        forced_auto = [
+            arm.value
+            for arm in APPROVAL_ONLY_ARMS
+            if body.autonomy.get(arm) is Autonomy.AUTO
+        ]
+        if forced_auto:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{', '.join(forced_auto)} always requires streamer approval",
             )
         controller.autonomy.update(body.autonomy)
     if body.enabled is not None:

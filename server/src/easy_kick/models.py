@@ -64,10 +64,20 @@ class TrialOrigin(StrEnum):
     MANUAL = "manual"
 
 
-# What the bandit chooses between. `PREDICTION` stakes viewers' Channel Points, so it stays
-# a manual card rather than an arm we explore. `CHAT_DIGEST` is a streamer-only card triggered
-# by its own eligibility rule, not selected by Thompson sampling, so it's also excluded here.
-BANDIT_ARMS = (Arm.NOTHING, Arm.EMOTE_RALLY, Arm.CHAT_POLL, Arm.QUIZ)
+# What Thompson sampling chooses between. Prediction is still a real experiment, but its
+# delivery always stops for streamer approval because it stakes viewers' Channel Points.
+# Chat digest is streamer-only and triggered by its own eligibility rule, so it is the one
+# controller move that does not belong in this choice set.
+BANDIT_ARMS = (
+    Arm.NOTHING,
+    Arm.EMOTE_RALLY,
+    Arm.CHAT_POLL,
+    Arm.QUIZ,
+    Arm.PREDICTION,
+)
+
+# Safety policy, not something learning can promote away.
+APPROVAL_ONLY_ARMS = frozenset({Arm.PREDICTION})
 
 
 def parse_timestamp(timestamp: str) -> datetime | None:

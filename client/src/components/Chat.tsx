@@ -279,7 +279,8 @@ function Body({ text }: { text: string }) {
   return <>{out}</>;
 }
 
-function Row({ m, isBot }: { m: ChatFrame; isBot: boolean }) {
+/** One message in Kick's chatroom style. Shared with the Insights transcript snippet. */
+export function ChatMessageRow({ m, isBot }: { m: ChatFrame; isBot: boolean }) {
   if (isBot) {
     return (
       <div
@@ -450,7 +451,9 @@ export default function Chat({
             Waiting for chat. Start the gym, or connect a live Kick channel.
           </p>
         ) : (
-          view.map((m) => <Row key={m.id} m={m} isBot={m.username === BOT_NAME} />)
+          view.map((m) => (
+            <ChatMessageRow key={m.id} m={m} isBot={m.username === BOT_NAME} />
+          ))
         )}
 
         {/* Kick's divider: the frozen feed ends here, and everything past it arrived while

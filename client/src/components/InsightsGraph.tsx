@@ -1,5 +1,6 @@
-// One graph for viewers, active viewers and actions, with the intervention ledger overlaid
-// as vertical markers on the same timeline.
+// One graph for Viewers, Talking and Activity — the same three the dashboard's Session Info
+// strip carries, defined in `metrics.ts` — with the intervention ledger overlaid as vertical
+// markers on the same timeline.
 //
 // Two things a growing session breaks, and how this handles them:
 //
@@ -25,6 +26,16 @@ export type GraphSeries = {
   data: number[];
   color: string;
   label: string;
+  /** The live value, printed in the legend beside the name. The legend has to exist anyway
+   *  to map colours to lines; carrying the number too is what makes it the same strip the
+   *  dashboard shows, for free, in no extra height. */
+  value?: string;
+  /** What the line counts, for the tooltip on its own name. A chart of three lines whose
+   *  labels are three nouns is a chart three people will read three ways. */
+  hint?: string;
+  /** Appended to this series' readout. A count and a rate that happen to be the same number
+   *  are not the same measurement, and a bare pair of `32`s says they are. */
+  unit?: string;
   scaleGroup?: string;
   /** Context rather than subject: drawn thin and faint so it reads as a backdrop the
    *  other lines move against. */
@@ -266,19 +277,18 @@ export default function InsightsGraph({
     <div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         {series.map((s) => (
-          <span key={s.label} className="flex items-center gap-1.5 text-body text-[var(--text-secondary)]">
+          <span key={s.label} title={s.hint}
+            className="flex items-center gap-1.5 text-body text-[var(--text-secondary)]"
+            style={{ cursor: s.hint ? 'help' : undefined }}>
             <span className="size-2 rounded-full" style={{ background: s.color }} />
             {s.label}
+            {s.value && (
+              <span className="tnum font-semibold text-[var(--text-primary)]">{s.value}</span>
+            )}
           </span>
         ))}
-        {/* The instruction lives out here rather than in the card's band, which scrolls. */}
-        <span className="ml-auto truncate text-label text-[var(--text-muted)]">
-          {interventions.length
-            ? `${interventions.length} actions — hover anywhere to read the numbers, click a pin for the chat`
-            : 'pins appear here as windows close'}
-        </span>
         <button onClick={toLive} disabled={live}
-          className="flex shrink-0 items-center gap-1 text-label font-semibold transition-colors"
+          className="ml-auto flex shrink-0 items-center gap-1 text-label font-semibold transition-colors"
           style={{ color: live ? 'var(--text-muted)' : 'var(--kick-green)' }}>
           <span className="size-2 rounded-full"
             style={{ background: live ? 'var(--kick-green)' : 'var(--text-muted)' }} />
@@ -350,6 +360,11 @@ export default function InsightsGraph({
                           <span className="text-body text-[var(--text-secondary)]">{s.label}</span>
                           <span className="tnum text-lead font-bold text-[var(--text-primary)]">
                             {readout(s.data[cursor])}
+                            {s.data[cursor] != null && s.unit && (
+                              <span className="text-body font-normal text-[var(--text-muted)]">
+                                {s.unit}
+                              </span>
+                            )}
                           </span>
                         </span>
                       ))}

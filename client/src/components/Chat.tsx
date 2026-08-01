@@ -10,7 +10,8 @@
 // than one that keeps growing under your cursor.
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { X } from 'lucide-react';
-import type { ChatFrame, PollFrame } from '../types';
+import type { ChatFrame, PollFrame, Prediction } from '../types';
+import { asPrediction } from '../types';
 import { BOT_NAME, isAward, type ClosedPoll } from '../useGambit';
 import { emoteSrc } from '../kick/emotes';
 import { LevelBadge, identity } from '../kick/badges';
@@ -123,6 +124,67 @@ function PollBanner({ poll, closesInS, onDismiss }: {
             : 'no one voted'
           : `${poll.voters} viewer${poll.voters === 1 ? '' : 's'} voted · one vote each` +
             (total < MIN_FOR_PCT ? ' · too few to read as a split' : '')}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * A prediction, in the poll banner's shape minus everything we cannot honestly show.
+ *
+ * `/prediction …` is a command Kick consumes: no viewer sees that text, the staking happens
+ * in Kick's own widget, and no vote ever comes back to us (which is why `prediction` pays no
+ * XP — see `ARM_XP`). So there are no bars and no tally here, deliberately — the outcomes
+ * render as the same unclickable chips a poll uses, and the footer says where the answer
+ * actually is instead of printing a zero that would read as "nobody backed it".
+ */
+function PredictionBanner({ prediction, pinned = false }: {
+  prediction: Prediction;
+  /** In the pinned slot above the feed, rather than inline as a message row. */
+  pinned?: boolean;
+}) {
+  return (
+    <div
+      className={
+        pinned
+          ? 'shrink-0 border-b border-[var(--border)] px-2 py-1.5'
+          : 'mx-2 my-1 rounded-md border-l-2 px-2 py-1.5 lg:mx-3'
+      }
+      style={{
+        background: 'rgba(83,252,24,0.06)',
+        ...(pinned ? {} : { borderColor: 'var(--kick-green)' }),
+      }}
+    >
+      <div className="flex items-center gap-1.5">
+        <span
+          className="rounded px-1 py-px text-[9px] font-bold tracking-wider text-black"
+          style={{ background: 'var(--kick-green)' }}
+        >
+          GAMBIT
+        </span>
+        <span className="text-[9px] uppercase tracking-widest text-[var(--kick-green)]">
+          prediction open
+        </span>
+      </div>
+      <p className="mt-1 text-[12px] font-medium leading-snug text-[var(--text-primary)]">
+        {prediction.question}
+      </p>
+
+      {prediction.outcomes.length > 0 && (
+        <div className="mt-1.5 flex gap-1.5">
+          {prediction.outcomes.map((outcome) => (
+            <span
+              key={outcome}
+              className="flex-1 truncate rounded-sm border border-[var(--border)] px-2 py-1 text-[12px] font-semibold text-[var(--text-primary)]"
+            >
+              {outcome}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+        viewers stake Channel Points in Kick's widget · we never see who backed which side
       </p>
     </div>
   );
@@ -265,6 +327,10 @@ export function ChatMessageRow({ m, isBot }: { m: ChatFrame; isBot: boolean }) {
   if (isAward(m)) return <AwardRow m={m} />;
 
   if (isBot) {
+    // A prediction is not a line the bot said, so it does not get the "posted to chat" row.
+    const prediction = asPrediction(m.text);
+    if (prediction) return <PredictionBanner prediction={prediction} />;
+
     return (
       <div
         className="mx-2 my-1 rounded-md border-l-2 px-2 py-1.5 lg:mx-3"
@@ -376,6 +442,11 @@ export default function Chat({
     setFrozen(null);
   };
 
+  // The pinned slot holds whatever our last move was — a prediction command has to become the
+  // widget it opens there too, or the one line the streamer is meant to point at is the one
+  // place our slash syntax is still on screen.
+  const lastBotPrediction = asPrediction(lastBot?.text);
+
   const hasNew = frozen !== null && messages[messages.length - 1]?.id !== frozen[frozen.length - 1]?.id;
   // Interventions, not awards. This counter is the ACT step's tally — "our line reached the
   // same chat everyone else is in" — and an award is a receipt for one of those, so counting
@@ -413,6 +484,8 @@ export default function Chat({
         <PollBanner poll={poll} closesInS={poll.closes_in_s} />
       ) : closedPoll ? (
         <PollBanner poll={closedPoll} onDismiss={onDismissPoll} />
+      ) : lastBotPrediction ? (
+        <PredictionBanner prediction={lastBotPrediction} pinned />
       ) : lastBot && (
         <div className="shrink-0 border-b border-[var(--border)] px-2 py-1.5"
           style={{ background: 'rgba(83,252,24,0.06)' }}>

@@ -18,7 +18,7 @@
 // over nothing, and the chart never moves because the band is always there.
 import { useEffect, useRef, useState } from 'react';
 import {
-  ARM_LABEL, VERDICT_COLOR, clock as fmt, labelFor, peopleShort, points,
+  ARM_LABEL, VERDICT_COLOR, clock as fmt, labelFor, lineQuoted, peopleShort, points,
   type ActionFrame, type ResultFrame,
 } from '../types';
 
@@ -336,7 +336,7 @@ export default function InsightsGraph({
                         third place on screen saying when. */}
                     <div className="mt-1 flex items-baseline gap-2">
                       <span className="min-w-0 flex-1 truncate text-lead text-[var(--text-primary)]">
-                        {shown.action?.body ? `“${shown.action.body}”` : '—'}
+                        {shown.action?.body ? lineQuoted(shown.action.body) : '—'}
                       </span>
                       {!shown.contaminated && (
                         <span className="tnum shrink-0 text-label text-[var(--text-muted)]">

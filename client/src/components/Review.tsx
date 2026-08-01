@@ -31,7 +31,7 @@ import { ChevronRight, Radar } from 'lucide-react';
 import type { GambitState } from '../useGambit';
 import {
   ARM_LABEL, NOISE_BAND, STATE_LABEL, STATE_PHRASE, VERDICT_BLURB, VERDICT_COLOR, clock,
-  isControl, labelFor, peopleShort, points, whyUnattributable,
+  isControl, labelFor, lineQuoted, lineText, peopleShort, points, whyUnattributable,
   type Arm, type ChatState, type VerdictLabel,
 } from '../types';
 import InsightsGraph from './InsightsGraph';
@@ -432,8 +432,8 @@ function Entry({ r, history, bandit, chat, open, onToggle }: {
           {ARM_LABEL[r.arm]}
         </td>
         <td className={`${CELL} truncate text-body text-[var(--text-primary)]`}
-          title={r.action?.body ?? undefined}>
-          {r.action?.body ? `“${r.action.body}”` : (
+          title={r.action?.body ? lineText(r.action.body) : undefined}>
+          {r.action?.body ? lineQuoted(r.action.body) : (
             <span className="text-[var(--text-muted)]">
               {control ? 'chose not to intervene' : r.outcome.replace('_', ' ')}
             </span>

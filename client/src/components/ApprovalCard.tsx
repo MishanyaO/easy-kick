@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Zap } from 'lucide-react';
 import type { ActionFrame, BanditFrame } from '../types';
-import { STATE_LABEL, whyThisArm } from '../types';
+import { ARM_LABEL, STATE_LABEL, asPrediction, whyThisArm } from '../types';
 
 const FLOATING =
   'w-[360px] rounded-xl border bg-[var(--bg-surface)] shadow-[0_18px_50px_-8px_rgba(0,0,0,0.85)]';
@@ -24,6 +24,9 @@ export default function ApprovalCard({ action, bandit, onDecide, docked = false 
 }) {
   const SHELL = docked ? DOCKED : FLOATING;
   const why = whyThisArm(bandit, action.state, action.kind);
+  // Null for every other arm, which is the switch between "a line we are about to say" and
+  // "a widget we are about to open in Kick" — two different promises, so two different cards.
+  const prediction = asPrediction(action.body);
 
   const [left, setLeft] = useState(1);
   // Held in a ref so the effect keys on the action id alone, not on `onDecide` identity.
@@ -64,7 +67,11 @@ export default function ApprovalCard({ action, bandit, onDecide, docked = false 
         >
           {STATE_LABEL[action.state]}
         </span>
-        <span className="ml-auto text-[10px] text-[var(--text-muted)]">{action.kind}</span>
+        {/* The product name, not the wire name: `emote_rally` on a card a streamer reads is
+            us showing them our variable names. */}
+        <span className="ml-auto text-[10px] text-[var(--text-muted)]">
+          {ARM_LABEL[action.kind]}
+        </span>
       </div>
       <p className={`text-[var(--text-muted)] ${docked ? 'mt-0.5 text-[10px]' : 'mt-1 text-[11px]'}`}>
         {action.reason}
@@ -75,8 +82,38 @@ export default function ApprovalCard({ action, bandit, onDecide, docked = false 
           docked ? 'mt-2 text-[13px]' : 'mt-4 text-[20px]'
         }`}
       >
-        “{action.body}”
+        {prediction ? prediction.question : `“${action.body}”`}
       </p>
+
+      {/* The two sides, shown the way the closed-poll banner shows options — a prediction is
+          the one arm whose card cannot say what it is asking for otherwise, because the
+          outcomes live inside the command string and `options` comes over the wire empty. */}
+      {prediction && prediction.outcomes.length > 0 && (
+        <div className={`flex gap-1.5 ${docked ? 'mt-1.5' : 'mt-3'}`}>
+          {prediction.outcomes.map((outcome) => (
+            <span
+              key={outcome}
+              className={`flex-1 truncate rounded-sm border border-[var(--border)] text-center font-semibold text-[var(--text-secondary)] ${
+                docked ? 'px-1.5 py-0.5 text-[10px]' : 'px-2 py-1 text-[12px]'
+              }`}
+            >
+              {outcome}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Said before the button, not after it: this arm spends the viewers' Channel Points,
+          which is the whole reason it can never be auto-approved (`prediction` is pinned to
+          `ask` server-side), and a streamer should read that while deciding rather than
+          discover it once Kick's widget is up. */}
+      {prediction && (
+        <p
+          className={`text-[var(--text-muted)] ${docked ? 'mt-1.5 text-[10px]' : 'mt-3 text-[11px]'}`}
+        >
+          Opens Kick's prediction widget · viewers stake Channel Points
+        </p>
+      )}
 
       <button
         onClick={() => onDecide(action.id, 'send')}
@@ -84,6 +121,9 @@ export default function ApprovalCard({ action, bandit, onDecide, docked = false 
           docked ? 'mt-2 rounded-sm py-1.5 text-xs' : 'mt-4 rounded-lg py-4 text-base'
         }`}
       >
+        {/* Keyed on the arm, not on the parse: a prediction whose wording we failed to read
+            still opens a widget rather than posting a line, and the button must not promise
+            the wrong thing just because the copy changed shape. */}
         {action.kind === 'prediction' ? 'Start prediction' : 'Send to chat'}
       </button>
       <div

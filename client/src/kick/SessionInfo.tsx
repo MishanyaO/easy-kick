@@ -63,8 +63,10 @@ export default function SessionInfo({
 
   const cells: [string, string][] = [
     ['Session', live ? 'LIVE' : 'OFFLINE'],
-    ['Category', context?.category ?? '-'],
     ['Time Live', displayUptime != null ? elapsed(displayUptime) : '-'],
+    // Static channel chrome — no followers/subs on the wire, same as Stream info's details.
+    ['Followers', '18.2K'],
+    ['Sub Count', '427'],
   ];
 
   return (

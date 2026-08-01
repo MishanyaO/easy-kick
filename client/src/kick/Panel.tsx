@@ -39,13 +39,29 @@ export default function Panel({
   );
 }
 
-/** The small icon buttons Kick puts in panel headers. */
-export function PanelButton({ label, children }: { label: string; children: ReactNode }) {
+/** The small icon buttons Kick puts in panel headers. Inert by default; pass
+ *  `onClick` to make it act, and `active` to show it as engaged (a toggle that
+ *  is currently on). */
+export function PanelButton({
+  label,
+  children,
+  onClick,
+  active = false,
+}: {
+  label: string;
+  children: ReactNode;
+  onClick?: () => void;
+  active?: boolean;
+}) {
   return (
     <button
       aria-label={label}
       title={label}
-      className="flex size-6 items-center justify-center rounded text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-white"
+      aria-pressed={onClick ? active : undefined}
+      onClick={onClick}
+      className={`flex size-6 items-center justify-center rounded transition-colors hover:bg-[var(--bg-elevated)] hover:text-white ${
+        active ? 'text-[var(--kick-green)]' : 'text-[var(--text-secondary)]'
+      }`}
     >
       {children}
     </button>

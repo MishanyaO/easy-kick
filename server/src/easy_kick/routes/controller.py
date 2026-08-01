@@ -125,11 +125,39 @@ def gym_fire(app, state: GymState):
     return fire
 
 
+def gym_announce(state: GymState):
+    """An award line lands in the gym's chat, but never calls `fire` — the personas have
+    no hidden response to a congratulation, so the simulator shows no reaction to one. The
+    contamination an award causes on real Kick is therefore invisible in every gym run:
+    the demo reads cleaner than production is."""
+    def say(text: str) -> None:
+        if state.gym is not None:
+            state.gym.say(text)
+    return say
+
+
 def live_fire(app):
     def fire(action_id: str, arm: Arm, chat_state, card) -> bool:
         asyncio.create_task(_post(app, action_id, card.body))
         return False  # confirmation arrives through the callback below
     return fire
+
+
+def live_announce(app):
+    """Fire-and-forget: nothing downstream waits on an award reaching chat, and a failure
+    is dropped rather than retried."""
+    def say(text: str) -> None:
+        asyncio.create_task(_post_plain(app, text))
+    return say
+
+
+async def _post_plain(app, content: str) -> None:
+    try:
+        await app.state.kick.send_chat(
+            content, app.state.settings.broadcaster_user_id
+        )
+    except Exception:
+        logger.warning("could not post an award line to Kick chat", exc_info=True)
 
 
 async def _post(app, action_id: str, content: str) -> None:
@@ -204,6 +232,8 @@ async def start_gym(request: Request, speed: float = Query(1.0, gt=0, le=100),
 
     if state.mode == "gym":
         request.app.state.controller.perform = gym_fire(request.app, state)
+        # The story wires its own, in `Scenario.__init__`, alongside `perform`.
+        request.app.state.controller.announce = gym_announce(state)
     state.task = asyncio.create_task(_run_gym(request.app, state))
     logger.info("gym started: mode=%s seed=%s speed=%s", state.mode, seed, speed)
     return state.status()
@@ -284,6 +314,7 @@ def _reset_shared_state(app, *, bandit_seed: int | None = None) -> None:
         app,
         settings,
         perform=live_fire(app) if settings.controller_enabled else None,
+        announce=live_announce(app) if settings.controller_enabled else None,
         bandit_seed=bandit_seed,
     )
     if previous is not None:
@@ -347,6 +378,9 @@ class AutonomyUpdate(BaseModel):
 
     autonomy: dict[Arm, Autonomy] | None = None
     enabled: bool | None = None
+    # Participation XP posted into chat. Separate from `enabled` on purpose: a streamer who
+    # decides the award lines are too much mid-stream should not have to stop the bot.
+    rewards_enabled: bool | None = None
     # Set before the stream starts. `manual`: `fire_rate` (fires/minute per arm) drives firing
     # directly, the bandit is never consulted. `auto`: `fire_rate` is ignored entirely.
     mode: Mode | None = None
@@ -375,11 +409,15 @@ async def set_autonomy(body: AutonomyUpdate, request: Request) -> dict:
         controller.autonomy.update(body.autonomy)
     if body.enabled is not None:
         controller.enabled = body.enabled
+    if body.rewards_enabled is not None:
+        controller.rewards_enabled = body.rewards_enabled
     if body.mode is not None:
         controller.mode = body.mode
     if body.fire_rate:
         controller.fire_rate.update(body.fire_rate)
-    return {"enabled": controller.enabled, "autonomy": controller.autonomy,
+    return {"enabled": controller.enabled,
+            "rewards_enabled": controller.rewards_enabled,
+            "autonomy": controller.autonomy,
             "promotions": controller.promotions(),
             "mode": controller.mode, "fire_rate": controller.fire_rate}
 

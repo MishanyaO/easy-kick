@@ -1,14 +1,28 @@
 // One SSE subscription, one reducer, one state object for both surfaces.
 import { useEffect, useReducer, useRef } from 'react';
-import { cellKey } from './types';
+import { AWARD_SIGILS, cellKey } from './types';
 import type {
-  ActionFrame, Arm, Autonomy, BanditFrame, Belief, ChatFrame, ClosedPoll, ContextFrame,
-  DigestFrame, Frame, Mode, PollFrame, ResultFrame,
+  ActionFrame, Arm, Autonomy, AwardFrame, BanditFrame, Belief, ChatFrame, ClosedPoll,
+  ContextFrame, DigestFrame, Frame, Mode, PollFrame, ResultFrame,
 } from './types';
 export type { ClosedPoll } from './types';
 
 /** The bot's username in chat, live and in the gym. */
 export const BOT_NAME = 'gambit';
+
+/**
+ * A participation award, as opposed to one of our interventions.
+ *
+ * Both are `gambit` lines in the same chat and only the text distinguishes them, so the
+ * sender is checked too — a viewer opening a message with 💰 is a viewer, not an award.
+ *
+ * This distinction is load-bearing rather than cosmetic. Every bot line used to replace the
+ * pinned "our last line" banner and clear the closed poll's final tally; an award posts at
+ * the very moment a poll closes, so without this it would wipe the result it exists to
+ * celebrate.
+ */
+export const isAward = (m: ChatFrame) =>
+  m.username === BOT_NAME && AWARD_SIGILS.some((sigil) => m.text.startsWith(sigil));
 
 export const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 const CONTROL_KEY = import.meta.env.VITE_CONTROL_API_KEY;
@@ -83,9 +97,21 @@ export type GambitState = {
   closedPoll: ClosedPoll | null;
   /** chat_digest cards, newest first — never posted to chat, never scored */
   digests: DigestFrame[];
+  /** everyone who has earned anything this session — the denominator the Rewards columns
+   *  are a sample of */
+  ranked: number;
+  /** award frames, newest first. The Rewards tab draws a column per intervention from
+   *  these, and each frame carries its own participants and their running totals, so a
+   *  column needs nothing else. The frame also carries a `standings` snapshot of the whole
+   *  ledger, which no surface reads today — kept on the wire because it is the session's
+   *  authoritative record, not because anything here depends on it. */
+  awards: AwardFrame[];
 };
 
 const MAX_DIGESTS = 20;
+/** Award frames kept for the Rewards columns. Well past the handful of columns drawn, so
+ *  raising `COLUMNS` there needs no change here. */
+const MAX_AWARDS = 50;
 /** Comfortably more than the 200 results the ledger keeps, so every visible row can
  *  still find its action. */
 const MAX_SEEN = 260;
@@ -97,6 +123,7 @@ const EMPTY: GambitState = {
   viewerHistory: [], activeViewersHistory: [], actionsHistory: [], historyElapsedS: [],
   pending: null, inflight: {}, seen: {}, results: [], bandit: null, banditTrail: {},
   poll: null, closedPoll: null, digests: [], tick: 0,
+  ranked: 0, awards: [],
 };
 
 /** Samples of each belief kept for the policy map. A bandit frame lands on every decision
@@ -145,7 +172,10 @@ function reduce(s: GambitState, m: Msg): GambitState {
 
   switch (f.type) {
     case 'chat': {
-      const isBot = f.username === BOT_NAME;
+      // An award is our line too, but it is not a new *thing we said to chat* — it is the
+      // receipt for the thing above it. Treating it as one would blank the pinned banner
+      // and the closed poll's final tally at the exact moment the tally became interesting.
+      const isBot = f.username === BOT_NAME && !isAward(f);
       return {
         ...s,
         chat: [...s.chat, f],
@@ -241,6 +271,16 @@ function reduce(s: GambitState, m: Msg): GambitState {
     case 'digest':
       return { ...s, digests: [f, ...s.digests].slice(0, MAX_DIGESTS) };
 
+    // `ranked` is a snapshot — the server's own count of everyone who has earned anything —
+    // rather than something derived by counting names across the awards we happen to still
+    // be holding, which would shrink as the feed rolls over.
+    case 'award':
+      return {
+        ...s,
+        ranked: f.chatters_ranked,
+        awards: [f, ...s.awards].slice(0, MAX_AWARDS),
+      };
+
     default:
       return s;
   }
@@ -324,6 +364,9 @@ export const gym = {
 
 export type Policy = {
   enabled: boolean;
+  /** Whether closed windows pay participation XP into chat. Separate from `enabled`:
+   *  "the award lines are too much" and "stop the bot" are different decisions. */
+  rewards_enabled: boolean;
   autonomy: Record<Arm, Autonomy>;
   mode: Mode;
   fire_rate: Partial<Record<Arm, number>>;
@@ -333,10 +376,11 @@ export const controller = {
   policy: (): Promise<Policy> => fetch(`${API_BASE}/controller/policy`).then((r) => r.json()),
   setAutonomy: (body: {
     enabled?: boolean;
+    rewards_enabled?: boolean;
     autonomy?: Partial<Record<Arm, Autonomy>>;
     mode?: Mode;
     fire_rate?: Partial<Record<Arm, number>>;
-  }) =>
+  }): Promise<Policy> =>
     fetch(`${API_BASE}/controller/autonomy`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', ...controlHeaders() },

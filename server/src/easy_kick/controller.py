@@ -16,6 +16,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from .awards import (
+    XP_PER_ARM,
+    AwardBook,
+    award_line,
+    participants,
+    promotion_line,
+)
 from .bandit import MIN_PULLS, Bandit, Decision, control_floor
 from .context import StreamContext
 from .controller_history import ControllerHistory
@@ -108,6 +115,7 @@ class Controller:
         store: EventStore,
         publish: Callable[[str, dict], None],
         perform: Callable[[str, Arm, ChatState, Card], bool] | None = None,
+        announce: Callable[[str], None] | None = None,
         require_live: bool = False,
         warmup_s: float = 0.0,
     ):
@@ -118,10 +126,18 @@ class Controller:
         self._store = store
         self._publish = publish
         self.perform = perform
+        # Plain chat output that is not an intervention: award lines. Separate from
+        # `perform` because `perform` opens a measured window and this must never do that.
+        self.announce = announce
         self._require_live = require_live
         self._warmup_s = warmup_s
 
         self.enabled = True  # kill switch
+        # Whether closed windows pay out participation XP into chat. A rail, not a setting
+        # the loop learns: this writes to the streamer's real channel, so it has to be
+        # switchable mid-stream without taking the rest of the bot down with it.
+        self.rewards_enabled = True
+        self._awards = AwardBook()
         # Moves opened, whoever chose them. Not the bandit's own count, which by design
         # stands still in `manual` — the sliders decide there and `select` is never called.
         self.decisions = 0
@@ -280,6 +296,7 @@ class Controller:
         """`GET /controller/policy`: the learned table, the rails, and what it all means."""
         return {
             "enabled": self.enabled,
+            "rewards_enabled": self.rewards_enabled,
             "mode": self.mode,
             "fire_rate": dict(self.fire_rate),
             "autonomy": dict(self.autonomy),
@@ -312,6 +329,9 @@ class Controller:
         switched on, is the reset overwriting a decision that was never ours to make.
         """
         self.enabled = other.enabled
+        # A rail, like the rest of these. The XP ledger itself is NOT carried over: it is
+        # measured evidence about a session, and a fresh run starts everyone at zero.
+        self.rewards_enabled = other.rewards_enabled
         self.autonomy = dict(other.autonomy)
         self.mode = other.mode
         self.fire_rate = dict(other.fire_rate)
@@ -500,10 +520,70 @@ class Controller:
                 tally,
             ),
         )
+        self._award(window, card, now)
         self._emit(
             "controller.bandit",
             {**self._bandit.snapshot(), "type": "bandit", "ts": _iso(now)},
         )
+
+    def _award(self, window: Window, card: Card | None, now: float) -> None:
+        """Pay out participation XP for a window that actually reached chat.
+
+        Deliberately after the `result` frame: the ledger's row is the record of what
+        happened, and the award is a consequence of it. Nothing here touches `RewardBook`,
+        so an award never opens a contamination shadow — see the note in `awards.py`.
+        """
+        xp = XP_PER_ARM.get(window.arm)
+        if not (self.rewards_enabled and window.fired) or xp is None:
+            return
+        took_part = participants(
+            self._store,
+            window.arm,
+            card.options if card else [],
+            window.opened_at,
+            now,
+        )
+        grant = self._awards.grant(window.arm, took_part, xp)
+        if grant is None:
+            return
+        self._say(award_line(grant, xp))
+        if (promoted := promotion_line(grant.promotions)) is not None:
+            self._say(promoted)
+        self._emit(
+            "controller.award",
+            {
+                "type": "award",
+                "ts": _iso(now),
+                "action_id": window.id,
+                "arm": window.arm,
+                "xp": xp,
+                # Participation order — earliest first, the same rule `ballots` uses — so
+                # the Rewards column shows who was quickest rather than an arbitrary five.
+                "awarded": [
+                    {"user": p.user, "xp": p.xp, "tier": p.tier, "emoji": p.emoji}
+                    for p in grant.awarded
+                ],
+                "promoted": [
+                    {"user": p.user, "tier": p.tier, "emoji": p.emoji, "xp": p.xp}
+                    for p in grant.promotions
+                ],
+                # Snapshot, never a delta — a tab that reconnects after the frame history
+                # has rolled over still gets the whole board from the next award.
+                "standings": self._awards.standings(),
+                "chatters_ranked": self._awards.participants,
+            },
+        )
+
+    def _say(self, text: str) -> None:
+        """One plain line into chat. A failed award is dropped, never retried: a
+        congratulation arriving ninety seconds late is attached to nothing and reads as a
+        bug, and it must not be able to take a controller tick down with it."""
+        if self.announce is None:
+            return
+        try:
+            self.announce(text)
+        except Exception:
+            logger.warning("could not post award line", exc_info=True)
 
     def _ballots(self, window: Window, card: Card | None) -> tuple[dict[str, int], int]:
         """A real poll without a poll API: the bot asked, chat replied, we count."""
@@ -628,6 +708,7 @@ def build_stack(
     settings,
     *,
     perform: Callable[[str, Arm, ChatState, Card], bool] | None = None,
+    announce: Callable[[str], None] | None = None,
     bandit_seed: int | None = None,
 ) -> None:
     """Wire StreamContext -> EventStore -> Bandit -> EngagementMonitor -> Controller onto
@@ -657,6 +738,7 @@ def build_stack(
         store=app.state.store,
         publish=hub_publisher(app.state.hub, app.state.controller_history),
         perform=perform,
+        announce=announce,
         require_live=settings.controller_enabled,
         warmup_s=settings.controller_warmup_s,
     )

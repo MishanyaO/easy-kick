@@ -36,11 +36,12 @@ import {
 } from '../types';
 import InsightsGraph from './InsightsGraph';
 import PolicyMap from './PolicyMap';
+import Rewards from './Rewards';
 import ResultDetail, { type History, type LedgerRow } from './ResultDetail';
 import { LIVE_METRICS } from '../metrics';
 
 type Row = LedgerRow;
-type Tab = 'actions' | 'tactics';
+type Tab = 'actions' | 'tactics' | 'rewards';
 
 /** Which pile a window lands in: the four verdicts, plus the two piles that are not verdicts
  *  — windows that never reached chat, and the ones where staying quiet was the decision. */
@@ -48,9 +49,16 @@ type Section = VerdictLabel | 'unsent' | 'control';
 /** The pivot's row axis. `all` is the totals row, and also the "no state filter" value. */
 type StateKey = 'all' | ChatState;
 
-/** `tactics` stays the state key — the tab is still where you go to ask "what works?" —
- *  but the surface behind it is a map of beliefs now, and "Tactics" undersold it. */
-const TABS: [Tab, string][] = [['actions', 'Actions'], ['tactics', 'Policy map']];
+/** The surface behind `tactics` is a map of beliefs, and it briefly wore the label "Policy
+ *  map" to say so — but that names the implementation, and the question a streamer brings to
+ *  this tab is "what works?". `tactics` was always the state key; the label matches it again. */
+const TABS: [Tab, string][] = [
+  ['actions', 'Actions'],
+  ['tactics', 'Tactics'],
+  // Last, and deliberately so: the first two are what the bot learned, this is what the
+  // room earned. Different subject, and the smaller of the two claims.
+  ['rewards', 'Rewards'],
+];
 
 const STATES: ChatState[] = ['lull', 'steady', 'spike'];
 /** A tactic needs this many tries in a state before its average is worth reading aloud. */
@@ -606,7 +614,9 @@ export default function Review({ s }: { s: GambitState }) {
         />
       </div>
 
-      {tab === 'tactics' ? (
+      {tab === 'rewards' ? (
+        <Rewards s={s} />
+      ) : tab === 'tactics' ? (
         <div className="mt-4"><PolicyMap s={s} /></div>
       ) : s.results.length === 0 ? (
         // Before the pivot, not under it: a table of zeroes reads as a broken dashboard,

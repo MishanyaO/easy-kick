@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from easy_kick.awards import AWARD_SIGIL
 from easy_kick.bandit import Decision, Posterior
 from easy_kick.context import StreamContext
 from easy_kick.controller import COOLDOWN_S, Controller
@@ -329,6 +330,98 @@ def test_a_poll_is_tallied_from_what_chat_actually_typed():
     controller.tick(1000 + POLL_S)
 
     assert results(frames)[0]["votes"] == {"yes": 3, "no": 1}
+
+
+def awards(frames):
+    return [p for t, p in frames if t == "controller.award"]
+
+
+def test_a_closed_poll_pays_its_voters_and_says_so_in_chat():
+    controller, _, _, store, frames, _ = build(arm=Arm.CHAT_POLL)
+    said: list[str] = []
+    controller.announce = said.append
+
+    controller.tick(1000)
+    for i, vote in enumerate(["yes", "no", "yes"]):
+        store.add(chat(f"voter{i}", 1010 + i, vote))
+    controller.tick(1000 + POLL_S)
+
+    assert [row["user"] for row in awards(frames)[0]["standings"]] == [
+        "voter0", "voter1", "voter2",
+    ]
+    assert len(said) == 1 and said[0].startswith(AWARD_SIGIL)
+    assert "@voter0" in said[0]
+
+
+def test_the_reward_kill_switch_stops_the_payout_without_stopping_the_bot():
+    controller, _, _, store, frames, fires = build(arm=Arm.CHAT_POLL)
+    said: list[str] = []
+    controller.announce = said.append
+    controller.rewards_enabled = False
+
+    controller.tick(1000)
+    store.add(chat("voter", 1010, "yes"))
+    controller.tick(1000 + POLL_S)
+
+    assert not said and not awards(frames)
+    assert fires  # the intervention itself still went out
+    assert results(frames)[0]["votes"] == {"yes": 1, "no": 0}
+
+
+def test_a_dismissed_window_that_never_reached_chat_awards_nobody():
+    """Nobody can have participated in a prompt nobody was shown."""
+    controller, _, _, store, frames, _ = build(arm=Arm.CHAT_POLL, autonomy=Autonomy.ASK)
+    said: list[str] = []
+    controller.announce = said.append
+
+    controller.tick(1000)
+    store.add(chat("voter", 1010, "yes"))
+    controller.tick(1000 + POLL_S)
+
+    assert not said and not awards(frames)
+
+
+def test_an_award_does_not_open_a_contamination_shadow():
+    """An award is a real message, but treating one as a fired intervention would put a
+    120s shadow behind every rewarded window and push most of the ledger to 'Can't tell'."""
+    controller, _, _, store, frames, _ = build(arm=Arm.CHAT_POLL)
+    controller.announce = lambda text: None
+    prime_control(controller)
+
+    controller.tick(1000)
+    store.add(chat("voter", 1010, "yes"))
+    controller.tick(1000 + POLL_S)
+    before = controller._rewards._last_fire_at
+
+    assert awards(frames)  # the payout happened
+    assert before == 1000  # ...and the shadow still dates from the intervention
+
+
+def test_a_failing_chat_write_drops_the_award_instead_of_the_tick():
+    controller, _, _, store, frames, _ = build(arm=Arm.CHAT_POLL)
+
+    def explode(text: str) -> None:
+        raise RuntimeError("Kick said no")
+
+    controller.announce = explode
+
+    controller.tick(1000)
+    store.add(chat("voter", 1010, "yes"))
+    controller.tick(1000 + POLL_S)  # must not raise
+
+    assert results(frames)[0]["outcome"] == "fired"
+
+
+def test_the_reward_rail_survives_a_reset_but_the_ledger_does_not():
+    controller, _, _, store, frames, _ = build(arm=Arm.CHAT_POLL)
+    controller.announce = lambda text: None
+    controller.rewards_enabled = False
+
+    fresh, *_ = build(arm=Arm.CHAT_POLL)
+    fresh.adopt_rails(controller)
+
+    assert fresh.rewards_enabled is False
+    assert fresh._awards.standings() == []
 
 
 def test_one_viewer_gets_one_vote_however_many_times_they_type_it():

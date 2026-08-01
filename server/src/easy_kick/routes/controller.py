@@ -287,6 +287,31 @@ async def set_gym_speed(request: Request, speed: float = Query(..., gt=0, le=100
     return state.status()
 
 
+@gym_router.post("/click-rally")
+async def summon_click_rally(request: Request) -> dict:
+    """Fill the heatmap on demand — the 🔥 button's way to point the room at the video
+    between the rallies the policy plays. Only meaningful on a running scenario, whose step
+    loop is what streams the taps out; there is nothing to summon them onto otherwise."""
+    state: GymState = request.app.state.gym
+    if not state.running or not isinstance(state.gym, Scenario):
+        raise HTTPException(status_code=409, detail="no running scenario to summon taps on")
+    state.gym.summon_taps()
+    logger.info("click rally summoned by the streamer")
+    return state.status()
+
+
+@gym_router.delete("/click-rally")
+async def stop_click_rally(request: Request) -> dict:
+    """End a summoned rally on the streamer's cue — turning the heatmap back off stops the
+    taps rather than letting the window run out unwatched."""
+    state: GymState = request.app.state.gym
+    if not state.running or not isinstance(state.gym, Scenario):
+        raise HTTPException(status_code=409, detail="no running scenario to stop taps on")
+    state.gym.stop_taps()
+    logger.info("click rally stopped by the streamer")
+    return state.status()
+
+
 @gym_router.post("/pause")
 async def pause_gym(request: Request) -> dict:
     """Stop ticking without losing the gym, its metrics, or the elapsed uptime."""

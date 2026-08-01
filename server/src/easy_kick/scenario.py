@@ -152,6 +152,10 @@ TAPS_PER_MINUTE = 20.0  # one viewer's tapping while a rally is on — a tap eve
 # type — which is why the map fills the way it does, and why it fills for a room that
 # looks quiet in every other panel on the dashboard.
 TAPPERS_PER_RESPONDER = 12.0
+# How big a rally the streamer's own 🔥 summons, in chat responders. Fixed rather than read
+# off the current state: they asked to see the map, so it should fill the same whatever the
+# room happens to be doing — ten answerers is a healthy rally anywhere in the table.
+SUMMONED_RESPONDERS = 10
 
 # --- the showcase ----------------------------------------------------------------------
 #
@@ -662,6 +666,25 @@ class Scenario:
             return
         self._click_boost = responders * TAPPERS_PER_RESPONDER
         self._click_until = self.t + RESPONSE_WINDOW_S
+
+    def summon_taps(self) -> None:
+        """Point the room at the video on the streamer's cue rather than the bandit's.
+
+        The 🔥 button's own way to fill the heatmap between the rallies the policy plays: it
+        drives the exact same tap stream a landed rally does, so the map fills and fades the
+        way it always does and stops on its own after `RESPONSE_WINDOW_S`. Deliberately
+        nothing else — no line in chat, no `interventions`, no measurement — so summoning a
+        map to look at never becomes a row the policy could learn from.
+        """
+        self._click_response(Arm.CLICK_RALLY, SUMMONED_RESPONDERS)
+
+    def stop_taps(self) -> None:
+        """End the tap stream now — the streamer's way to call off a rally they summoned
+        (or cut short one in progress) by turning the heatmap back off. Closes the window
+        `_emit_clicks` checks, so the next beat sends nothing and the map fades out on the
+        client rather than running the rest of its window unwatched."""
+        self._click_boost = 0.0
+        self._click_until = self.t
 
     # --- the decision loop -----------------------------------------------------------
 

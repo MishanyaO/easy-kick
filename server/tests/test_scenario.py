@@ -26,6 +26,7 @@ from easy_kick.models import (
 from easy_kick.reward import WINDOW_S
 from easy_kick.scenario import (
     AUDIENCE,
+    CLICK_TICK_S,
     TARGET,
     RESPONSE_WINDOW_S,
     RUN_S,
@@ -495,6 +496,74 @@ def test_the_kill_switch_stops_the_story_dead():
     assert scenario.interventions == 0
     # The room still runs and is still measured — it is the bot that is switched off.
     assert [f for _, f in frames if f["type"] == "context"]
+
+
+def test_summoning_taps_fills_the_map_the_way_a_rally_does():
+    clicks = ClickLog()
+    scenario = build(7, hub=clicks)
+
+    # A quiet run the bandit has not played a rally in: the video is blank.
+    scenario.step(100.0)
+    assert not clicks.frames
+
+    scenario.summon_taps()
+    start = scenario.t
+    while scenario.t < start + RESPONSE_WINDOW_S:
+        scenario.step(CLICK_TICK_S)
+
+    answered = clicks.between(start, start + RESPONSE_WINDOW_S)
+    # Asked directly, the room taps — hard enough to fill a frame that was blank a beat ago.
+    assert len(answered) > 200
+    # ...and it aims at the same spot a real rally points the room at.
+    x, y = TARGET
+    on_target = sum(
+        abs(px - x) < 0.05 and abs(py - y) < 0.05 for px, py in answered
+    ) / len(answered)
+    assert on_target > 0.65
+
+    # And it ends on its own after the usual window: a summon is a rally, not a faucet.
+    quiet_from = scenario.t
+    for _ in range(3):
+        scenario.step(CLICK_TICK_S)
+    assert not clicks.between(quiet_from + CLICK_TICK_S, scenario.t + 100)
+
+
+def test_stopping_taps_ends_the_stream_at_once():
+    clicks = ClickLog()
+    scenario = build(7, hub=clicks)
+
+    scenario.summon_taps()
+    for _ in range(3):
+        scenario.step(CLICK_TICK_S)
+    assert clicks.points  # the room is tapping
+
+    # The streamer turns the map back off well before the response window would have ended.
+    scenario.stop_taps()
+    settled = len(clicks.points)
+    for _ in range(10):
+        scenario.step(CLICK_TICK_S)
+    # Not one more tap after the cue — the rally stops when asked, it does not run out.
+    assert len(clicks.points) == settled
+
+
+def test_summoning_taps_is_not_a_recorded_intervention():
+    frames: list[tuple[str, dict]] = []
+    clicks = ClickLog()
+    store = EventStore(maxlen=4000)
+    scenario = build(7, store=store, record=frames.append, hub=clicks)
+    scenario.controller.enabled = False  # isolate: nothing but the summon gets to act
+
+    scenario.summon_taps()
+    for _ in range(25):
+        scenario.step(CLICK_TICK_S)
+
+    # The map filled, but nothing about it is a bandit trial or a line in chat: summoning a
+    # map to look at must never become a row the policy could learn from.
+    assert clicks.points
+    assert scenario.interventions == 0
+    assert not [f for _, f in frames if f["type"] in ("action", "result")]
+    # A tap is not a chat event and never enters the record the reward is read off.
+    assert not store.query(event_type="controller.clicks")
 
 
 def test_the_run_sheet_publishes_the_ground_truth_and_the_status_reads_out_loud():

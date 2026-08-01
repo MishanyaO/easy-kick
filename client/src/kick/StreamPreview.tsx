@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ExternalLink, Flame, MonitorPlay } from 'lucide-react';
 import Panel, { PanelButton } from './Panel';
 import { CLICK_FADE_MS } from '../types';
+import { gym } from '../useGambit';
 import Heatmap from './Heatmap';
 import { useClickHeatmap, type Point } from './useClickHeatmap';
 
@@ -27,26 +28,30 @@ export default function StreamPreview({
    *  for as long as the streamer leaves it there. Resuming fades the picture out. */
   held?: boolean;
 }) {
-  const [heatmapOn, setHeatmapOn] = useState(false);
-  const [tapping, setTapping] = useState(false);
+  // Two independent reasons the map can be up, kept apart on purpose. `manualOn` is the
+  // streamer's own choice, owned by the 🔥 button and nothing else. `rallyActive` is the
+  // transient auto-open a live rally forces; it clears itself when the taps stop. Coupling
+  // the two into one flag is what left the button stuck on after a rally and made a manual
+  // toggle look dead — the auto path kept overwriting it.
+  const [manualOn, setManualOn] = useState(false);
+  const [rallyActive, setRallyActive] = useState(false);
+  const heatmapOn = manualOn || rallyActive;
   const { points, addClick } = useClickHeatmap(clicks);
 
-  // A rally is the only thing that ever sends taps, so their arrival is the whole signal:
-  // a batch means the room is answering one right now. The label has to leave with the
-  // picture it describes, so it rides the same clock — `CLICK_FADE_MS` after the last batch
-  // the map is empty and the badge goes with it. A held run has stopped that clock, so
-  // nothing expires until the streamer resumes and the two fade out together.
+  // A rally is the only thing that ever sends taps, so a *fresh* batch means the room is
+  // answering one right now. `clicks` is bounded by count and never emptied, so its length
+  // is not the signal — the last tap's `born` stamp is: it advances on every new batch and
+  // stands still once the taps stop. `CLICK_FADE_MS` after the last one the map is empty and
+  // the badge goes with it, returning the panel to whatever the streamer had set. A held run
+  // has stopped that clock, so nothing expires until they resume and the two fade out together.
+  const lastBorn = clicks.length ? clicks[clicks.length - 1].born : 0;
   useEffect(() => {
-    if (clicks.length === 0) {
-      setTapping(false);
-      return;
-    }
-    setTapping(true);
-    setHeatmapOn(true);
+    if (!lastBorn) return;
+    setRallyActive(true);
     if (held) return;
-    const id = setTimeout(() => setTapping(false), CLICK_FADE_MS);
+    const id = setTimeout(() => setRallyActive(false), CLICK_FADE_MS);
     return () => clearTimeout(id);
-  }, [clicks, held]);
+  }, [lastBorn, held]);
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!gymOn || !heatmapOn) return;
@@ -66,7 +71,16 @@ export default function StreamPreview({
             <PanelButton
               label={heatmapOn ? 'Hide click heatmap' : 'Show click heatmap'}
               active={heatmapOn}
-              onClick={() => setHeatmapOn((on) => !on)}
+              onClick={() => {
+                // Turning it on summons a rally so the map has something to show — the
+                // audience only taps the video when asked, so an empty overlay is all a
+                // bare toggle could ever reveal. Turning it off ends that rally, so the
+                // taps stop and the map fades rather than running out its window unwatched.
+                const turningOn = !heatmapOn;
+                setManualOn(turningOn);
+                if (turningOn) gym.summonClicks();
+                else gym.stopClicks();
+              }}
             >
               <Flame size={16} />
             </PanelButton>
@@ -92,7 +106,7 @@ export default function StreamPreview({
             className="pointer-events-none absolute inset-0 size-full"
           />
         )}
-        {gymOn && heatmapOn && (tapping || held) && (
+        {gymOn && heatmapOn && (rallyActive || held) && (
           <span className="pointer-events-none absolute bottom-2 left-2 rounded bg-black/70 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--kick-green)]">
             {held ? 'held on the click rally' : 'chat is tapping'}
           </span>

@@ -393,6 +393,13 @@ export const gym = {
     fetch(`${API_BASE}/dev/gym/speed?speed=${speed}`, { method: 'PATCH' }),
   stop: () => fetch(`${API_BASE}/dev/gym`, { method: 'DELETE' }),
   status: () => fetch(`${API_BASE}/dev/gym`).then((r) => r.json()),
+  /** Point the room at the video on the streamer's cue — fills the heatmap between the
+   *  rallies the policy plays. A no-op unless a scenario is running (nothing to tap on
+   *  otherwise), so callers can fire it and let the server decide. */
+  summonClicks: () => fetch(`${API_BASE}/dev/gym/click-rally`, { method: 'POST' }),
+  /** End a summoned rally — the taps stop and the map fades out, rather than running the
+   *  rest of the response window after the streamer has turned the heatmap off. */
+  stopClicks: () => fetch(`${API_BASE}/dev/gym/click-rally`, { method: 'DELETE' }),
 };
 
 export type Policy = {

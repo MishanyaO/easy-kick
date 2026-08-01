@@ -2,9 +2,11 @@ import { useEffect, useRef } from 'react';
 import { FADE_MS, type Point } from './useClickHeatmap';
 
 /** Radius of a single click's influence, in CSS pixels. */
-const BLOB_RADIUS = 26;
-/** Per-blob peak opacity in the alpha pass; overlapping blobs sum toward full. */
-const BLOB_ALPHA = 0.28;
+const BLOB_RADIUS = 28;
+/** Per-blob peak opacity in the alpha pass; overlapping blobs sum toward full.
+ *  Kept high so even scattered single clicks are visible and dense clusters run
+ *  hot (red) quickly. */
+const BLOB_ALPHA = 0.4;
 
 /** 256-entry blue→cyan→green→yellow→red lookup, indexed by accumulated alpha.
  *  Built once from a canvas gradient. Returns a flat RGBA array (length 1024). */

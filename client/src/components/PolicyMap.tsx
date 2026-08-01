@@ -19,10 +19,11 @@
 // per state instead: a state is an experiment, the card is its result and its workings, and
 // nothing on the page suggests reading between them.
 import { useState } from 'react';
-import { FlaskConical } from 'lucide-react';
+import { ChevronDown, FlaskConical } from 'lucide-react';
 import type { GambitState } from '../useGambit';
 import {
-  ARM_BLURB, ARM_LABEL, MIN_PULLS, STATE_LABEL, STATE_PHRASE, SURE, cellKey, pBeats, points,
+  ARM_BLURB, ARM_LABEL, MIN_PULLS, STATE_LABEL, STATE_PHRASE, SURE, betaLogPdf, betaSd,
+  cellKey, pBeats, points,
   type Arm, type Belief, type ChatState, type LastDecision, type Posterior,
 } from '../types';
 
@@ -88,13 +89,131 @@ function reading(p: Posterior, now: number, state: ChatState, arm: Arm): string 
   return `${ARM_LABEL[arm]} — ${asPct(now)} sure it beats staying quiet, over ${p.pulls} tries. ${ARM_BLURB[arm]}.`;
 }
 
+/** The density panel's coordinate space — a resolution, not a size, same as a track's. */
+const DW = 200;
+const DH = 64;
+const DSAMPLES = 96;
+/** Earlier snapshots drawn behind the live pair. Three reads as a direction; more reads as
+ *  hatching, and the live curves have to stay the brightest thing in the box. */
+const GHOSTS = 3;
+/** Under this the trail is too short for ghosts to be anything but the same curve drawn
+ *  four times on top of itself. */
+const MIN_TRAIL = 8;
+
+const beliefMean = (b: Belief) => b.alpha / (b.alpha + b.beta);
+const beliefSd = (b: Belief) => betaSd(b.alpha, b.beta);
+
+/** Beta(α, β) sampled across [lo, hi]. */
+const density = (b: Belief, lo: number, hi: number): number[] =>
+  Array.from({ length: DSAMPLES }, (_, i) => {
+    const x = clamp01(lo + ((hi - lo) * i) / (DSAMPLES - 1));
+    return Math.exp(betaLogPdf(Math.min(1 - 1e-9, Math.max(1e-9, x)), b.alpha, b.beta));
+  });
+
+/** Evenly spaced earlier points of the trail, oldest first, paired with the control at the
+ *  same instant. Both trails are appended on the same frame, so index i is one moment. */
+function ghostPairs(mine: Belief[], ctrl: Belief[]): [Belief, Belief][] {
+  const n = Math.min(mine.length, ctrl.length);
+  if (n < MIN_TRAIL) return [];
+  return Array.from({ length: GHOSTS }, (_, k) => {
+    const i = Math.round(((k + 1) / (GHOSTS + 2)) * (n - 1));
+    return [mine[i], ctrl[i]] as [Belief, Belief];
+  });
+}
+
+/**
+ * The two beliefs themselves, drawn, plus where they used to be.
+ *
+ * The line above this is a derived number; this is the thing the number is derived *from* —
+ * the tactic's posterior and silence's posterior on one axis. Two curves sliding apart and
+ * sharpening is what learning actually looks like, and it makes the sampler legible in a way
+ * no summary does: the width is exactly how wild a Thompson draw out of this cell can roll.
+ *
+ * The axis carries no numbers on purpose. These are posteriors over the *reward* — a
+ * logistic squash of relative lift with the interruption cost already subtracted — so the
+ * units answer no question a human has, and printing them would invite reading a scale that
+ * means nothing. Left/right and sharp/wide are the entire claim.
+ *
+ * The shaded crossing is likewise qualitative. It is the region where the two beliefs still
+ * overlap, so it shrinks as the number leaves 50% — but the overlap integral is not P(this
+ * beats that), and shading it as though it were would be drawing a different quantity than
+ * the one printed on the row.
+ */
+function Density({ mine, ctrl, ghosts, tint }: {
+  mine: Belief;
+  ctrl: Belief;
+  ghosts: [Belief, Belief][];
+  tint: string;
+}) {
+  const shown = [mine, ctrl, ...ghosts.flat()];
+  // Wide enough to hold every curve drawn, so a ghost is never clipped into looking like it
+  // ran off somewhere. A flat Beta(1, 1) opens this to the full [0, 1] on its own.
+  const lo = Math.max(0, Math.min(...shown.map((b) => beliefMean(b) - 3.5 * beliefSd(b))));
+  const hi = Math.min(1, Math.max(...shown.map((b) => beliefMean(b) + 3.5 * beliefSd(b))));
+
+  const fMine = density(mine, lo, hi);
+  const fCtrl = density(ctrl, lo, hi);
+  const fGhosts = ghosts.map(([m, c]) => [density(m, lo, hi), density(c, lo, hi)] as const);
+
+  // One vertical scale across everything: heights are comparable, so a sharpening curve
+  // visibly grows and a vague one stays a smear. Rescaling per curve would flatten the
+  // single most informative difference on the panel. The headroom is so a posterior that
+  // peaks against x=0 or x=1 — Beta(α, 1) after an unbroken run of wins does exactly that —
+  // reads as a curve leaning on the wall rather than as a chart with its top sliced off.
+  const peak = Math.max(...fMine, ...fCtrl, ...fGhosts.flat(2), 1e-9) * 1.1;
+  const x = (i: number) => (i / (DSAMPLES - 1)) * DW;
+  const y = (v: number) => DH - (v / peak) * DH;
+  const path = (c: number[]) =>
+    c.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
+  const tick = (b: Belief) => ((beliefMean(b) - lo) / (hi - lo || 1)) * DW;
+
+  return (
+    <svg viewBox={`0 0 ${DW} ${DH}`} preserveAspectRatio="none"
+      className="w-full" style={{ display: 'block', height: DH }}>
+      {/* oldest ghost faintest, so the stack itself reads as a direction of travel */}
+      {fGhosts.map(([gm, gc], k) => (
+        <g key={k} opacity={0.16 + 0.12 * k}>
+          <path d={path(gc)} fill="none" stroke="var(--text-secondary)" strokeWidth="1"
+            vectorEffect="non-scaling-stroke" />
+          <path d={path(gm)} fill="none" stroke={tint} strokeWidth="1"
+            vectorEffect="non-scaling-stroke" />
+        </g>
+      ))}
+
+      {/* the crossing, under both curves so neither is dimmed by it */}
+      <path d={`${path(fMine.map((v, i) => Math.min(v, fCtrl[i])))}L${DW},${DH}L0,${DH}Z`}
+        fill="var(--text-muted)" opacity={0.28} />
+
+      <path d={`${path(fCtrl)}L${DW},${DH}L0,${DH}Z`} fill="var(--text-secondary)" opacity={0.1} />
+      <path d={path(fCtrl)} fill="none" stroke="var(--text-secondary)" strokeWidth="1.5"
+        strokeDasharray="3,2" vectorEffect="non-scaling-stroke" />
+
+      <path d={`${path(fMine)}L${DW},${DH}L0,${DH}Z`} fill={tint} opacity={0.14} />
+      <path d={path(fMine)} fill="none" stroke={tint} strokeWidth="1.5"
+        vectorEffect="non-scaling-stroke" />
+
+      {/* where each belief currently sits, so "further right" has something to land on */}
+      <line x1={tick(ctrl)} x2={tick(ctrl)} y1={DH - 6} y2={DH} stroke="var(--text-secondary)"
+        strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+      <line x1={tick(mine)} x2={tick(mine)} y1={DH - 6} y2={DH} stroke={tint}
+        strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
 /** One tactic's line inside a state card: how sure, and how much it has to go on. */
-function Track({ state, arm, p, series }: {
+function Track({ state, arm, p, ctrlNow, series, mine, ctrl }: {
   state: ChatState;
   arm: Arm;
   p: Posterior;
+  /** silence's belief right now — the thing this row is drawn against */
+  ctrlNow: Belief;
   series: number[];
+  /** the cell's belief trail and silence's, index-aligned — see `trace` */
+  mine: Belief[];
+  ctrl: Belief[];
 }) {
+  const [open, setOpen] = useState(false);
   const now = series[series.length - 1];
   const cold = p.pulls < MIN_PULLS;
   // Grey, not green or red: under MIN_PULLS the sampler ignores this cell, so colouring it
@@ -106,27 +225,63 @@ function Track({ state, arm, p, series }: {
   const y = (v: number) => CH - clamp01(v) * CH;
   const d = series.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
 
+  // Ghosts come from the trail, but the live pair comes from the posteriors the header is
+  // already reading: a session can be one frame old, and the panel should still draw.
+  const ghosts = ghostPairs(mine, ctrl);
+  // The row's own grey is right for a cold *line*, but inside the density panel it is the
+  // control's colour too, and two grey curves on one axis is a picture of nothing. The
+  // panel needs the pair separable before it needs to stay uncommitted about the verdict,
+  // so a cold arm goes white and the direction is still carried by the row above.
+  const curveTint = cold ? 'var(--text-primary)' : tint;
+
   return (
-    <div className="flex items-center gap-2" title={reading(p, now, state, arm)}
-      style={{ opacity: p.pulls === 0 ? 0.6 : 1 }}>
-      <span className="w-[88px] shrink-0 truncate text-body text-[var(--text-primary)]">
-        {ARM_LABEL[arm]}
-      </span>
-      <svg viewBox={`0 0 ${CW} ${CH}`} preserveAspectRatio="none"
-        className="min-w-0 flex-1" style={{ display: 'block', height: CH }}>
-        {/* the coin flip — where every belief starts and where "no idea" stays */}
-        <line x1={0} x2={CW} y1={y(0.5)} y2={y(0.5)} stroke="var(--text-muted)" strokeWidth="1"
-          strokeDasharray="2,2" opacity={0.8} vectorEffect="non-scaling-stroke" />
-        {/* the area between the trace and the coin flip: which side, and by how much */}
-        <path d={`${d}L${CW},${y(0.5)}L0,${y(0.5)}Z`} fill={tint} opacity={0.18} />
-        <path d={d} fill="none" stroke={tint} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-      </svg>
-      <span className="tnum w-9 shrink-0 text-right text-body font-bold" style={{ color: tint }}>
-        {p.pulls === 0 ? '—' : asPct(now)}
-      </span>
-      <span className="tnum w-7 shrink-0 text-right text-label text-[var(--text-muted)]">
-        {p.pulls === 0 ? 'new' : `×${p.pulls}`}
-      </span>
+    <div>
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
+        title={reading(p, now, state, arm)}
+        className="flex w-full items-center gap-2 text-left"
+        style={{ opacity: p.pulls === 0 ? 0.6 : 1 }}>
+        <span className="w-[88px] shrink-0 truncate text-body text-[var(--text-primary)]">
+          {ARM_LABEL[arm]}
+        </span>
+        <svg viewBox={`0 0 ${CW} ${CH}`} preserveAspectRatio="none"
+          className="min-w-0 flex-1" style={{ display: 'block', height: CH }}>
+          {/* the coin flip — where every belief starts and where "no idea" stays */}
+          <line x1={0} x2={CW} y1={y(0.5)} y2={y(0.5)} stroke="var(--text-muted)" strokeWidth="1"
+            strokeDasharray="2,2" opacity={0.8} vectorEffect="non-scaling-stroke" />
+          {/* the area between the trace and the coin flip: which side, and by how much */}
+          <path d={`${d}L${CW},${y(0.5)}L0,${y(0.5)}Z`} fill={tint} opacity={0.18} />
+          <path d={d} fill="none" stroke={tint} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+        </svg>
+        <span className="tnum w-9 shrink-0 text-right text-body font-bold" style={{ color: tint }}>
+          {p.pulls === 0 ? '—' : asPct(now)}
+        </span>
+        <span className="tnum w-7 shrink-0 text-right text-label text-[var(--text-muted)]">
+          {p.pulls === 0 ? 'new' : `×${p.pulls}`}
+        </span>
+        {/* Rotated rather than swapped for a second glyph, so the row never reflows on open. */}
+        <ChevronDown size={12} className="shrink-0 text-[var(--text-muted)]"
+          style={{ transform: open ? 'rotate(180deg)' : 'none' }} />
+      </button>
+
+      {open && (
+        <div className="mb-1 mt-1.5 rounded-sm bg-[var(--bg-elevated)] px-2 pb-1.5 pt-2">
+          <Density mine={p} ctrl={ctrlNow} ghosts={ghosts} tint={curveTint} />
+          <div className="mt-1 flex flex-wrap items-baseline gap-x-2 text-label text-[var(--text-muted)]">
+            <span style={{ color: curveTint }}>{ARM_LABEL[arm]}</span>
+            <span>vs</span>
+            <span>staying quiet</span>
+            <span className="ml-auto">
+              {ghosts.length ? 'faint = earlier tonight' : 'no history yet'}
+            </span>
+          </div>
+          {/* One line. The panel is 64px tall and a four-line gloss under it turns the chart
+              into the caption's illustration rather than the other way round. */}
+          <p className="mt-0.5 text-label leading-snug text-[var(--text-muted)]">
+            Right is better, narrow is sure, and the width is how wild this cell rolls. Grey
+            is where the two still overlap.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -404,7 +559,12 @@ export default function PolicyMap({ s }: { s: GambitState }) {
             windows={posteriors.filter((p) => p.state === st).reduce((n, p) => n + p.pulls, 0)}>
             {arms.map((arm) => {
               const p = at(st, arm);
-              return p && <Track key={arm} state={st} arm={arm} p={p} series={seriesFor(st, arm)} />;
+              const ctrlNow = at(st, 'nothing');
+              return p && ctrlNow && (
+                <Track key={arm} state={st} arm={arm} p={p} ctrlNow={ctrlNow}
+                  series={seriesFor(st, arm)}
+                  mine={trail(st, arm)} ctrl={trail(st, 'nothing')} />
+              );
             })}
           </StateCard>
         ))}

@@ -1,22 +1,12 @@
 import { Pause, Play, Square } from 'lucide-react';
-import {
-  GYM_SPEEDS,
-  MODE_LABEL,
-  type GymControlsState,
-  type GymMode,
-} from './useGymControls';
+import { GYM_SPEEDS, type GymControlsState } from './useGymControls';
 
-const MODES = Object.keys(MODE_LABEL) as GymMode[];
-
-/** Both pickers are the same control with different contents, so they are one component —
- *  which is also what keeps them the same height when they sit in a row together. */
-function Segment<T extends string | number>({ items, value, render, onPick, locked, bar }: {
+/** The speed picker: one segmented control that stays the same height in either variant. */
+function Segment<T extends string | number>({ items, value, render, onPick, bar }: {
   items: readonly T[];
   value: T;
   render: (v: T) => string;
   onPick: (v: T) => void;
-  /** Why it is disabled, or undefined when it is not. */
-  locked?: string;
   bar: boolean;
 }) {
   return (
@@ -25,14 +15,12 @@ function Segment<T extends string | number>({ items, value, render, onPick, lock
         <button
           key={v}
           onClick={() => onPick(v)}
-          disabled={!!locked}
-          title={locked}
-          className={`rounded text-[12px] font-semibold transition-colors disabled:cursor-not-allowed ${
+          className={`rounded text-[12px] font-semibold transition-colors ${
             bar ? 'px-2.5 py-1' : 'flex-1 py-1'
           } ${
             v === value
               ? 'bg-[var(--bg-elevated)] text-white'
-              : 'text-[var(--text-muted)] enabled:hover:text-white disabled:opacity-40'
+              : 'text-[var(--text-muted)] hover:text-white'
           }`}
         >
           {render(v)}
@@ -55,7 +43,7 @@ export default function GymControls({
   gym: GymControlsState;
   variant?: 'panel' | 'bar';
 }) {
-  const { status, speed, mode, changeSpeed, changeMode, start, pause, stop } = gym;
+  const { status, speed, changeSpeed, start, pause, stop } = gym;
   const on = status === 'running';
   const bar = variant === 'bar';
 
@@ -104,10 +92,6 @@ export default function GymControls({
       ? 'flex items-center gap-2'
       : 'mt-3 flex flex-col gap-2 border-t border-[var(--border)] pt-3'}>
       {label}
-      {/* Locked once a run exists: Start resumes a paused run rather than restarting it, so
-          the picker has to keep showing the world that is actually on screen. */}
-      <Segment items={MODES} value={mode} render={(m) => MODE_LABEL[m]} onPick={changeMode}
-        locked={status === 'idle' ? undefined : 'Stop the run to switch worlds'} bar={bar} />
       <Segment items={GYM_SPEEDS} value={speed} render={(sp) => `${sp}x`} onPick={changeSpeed}
         bar={bar} />
       {buttons}

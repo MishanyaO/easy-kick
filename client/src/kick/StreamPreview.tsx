@@ -11,10 +11,13 @@ import { useClickHeatmap } from './useClickHeatmap';
  *  click on the preview) on top. */
 export default function StreamPreview({ gymOn }: { gymOn: boolean }) {
   const [heatmapOn, setHeatmapOn] = useState(false);
-  const { points, addClick } = useClickHeatmap(gymOn);
+  // Tie generation to the toggle (not just being live) so the map starts empty
+  // each time it's switched on and builds up gradually, instead of appearing
+  // already full from clicks accumulated while it was hidden.
+  const { points, addClick } = useClickHeatmap(gymOn && heatmapOn);
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!gymOn) return;
+    if (!gymOn || !heatmapOn) return;
     const rect = e.currentTarget.getBoundingClientRect();
     addClick((e.clientX - rect.left) / rect.width, (e.clientY - rect.top) / rect.height);
   };

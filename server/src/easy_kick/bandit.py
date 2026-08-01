@@ -20,6 +20,24 @@ MIN_PULLS = 3  # below this a cell is untrusted and we sample the prior instead
 PROPENSITY_SAMPLES = 200
 # Keep collecting a clean counterfactual even after Thompson sampling starts exploiting.
 MIN_NOTHING_PROBABILITY = 0.15
+# What that floor rises to while a state has no controls to score against. A quiet window
+# is the only thing that ever becomes a control, and most of them are wasted — one landing
+# inside the 120s shadow of a fire cannot be one. At 0.15 the pool fills so slowly that a
+# whole session can report "nothing to compare against" and teach the posterior nothing,
+# which is the failure the ledger was showing. Buying silence early is what fixes it, and
+# it costs nothing once the pool is full because the floor drops back on its own.
+MAX_NOTHING_PROBABILITY = 0.6
+
+
+def control_floor(deficit: float) -> float:
+    """How often to force `nothing`, given how short of controls a state is.
+
+    Driven by the pool's actual emptiness rather than by a decay schedule: a state the
+    bandit rarely visits should still buy its controls when it finally gets there.
+    """
+    deficit = max(0.0, min(1.0, deficit))
+    span = MAX_NOTHING_PROBABILITY - MIN_NOTHING_PROBABILITY
+    return MIN_NOTHING_PROBABILITY + span * deficit
 
 
 @dataclass
@@ -59,18 +77,21 @@ class Bandit:
         self.decisions = 0
 
     def select(
-        self, state: ChatState, eligible: Iterable[Arm] | None = None
+        self, state: ChatState, eligible: Iterable[Arm] | None = None,
+        nothing_floor: float | None = None,
     ) -> Decision:
+        """`nothing_floor` overrides how often `nothing` is forced — see `control_floor`."""
         eligible = self._eligible(eligible)
+        floor = MIN_NOTHING_PROBABILITY if nothing_floor is None else nothing_floor
         samples = {arm: self._draw(state, arm) for arm in eligible}
         forced_control = (
             Arm.NOTHING in eligible
             and len(eligible) > 1
-            and self._rng.random() < MIN_NOTHING_PROBABILITY
+            and self._rng.random() < floor
         )
         arm = Arm.NOTHING if forced_control else max(samples, key=samples.__getitem__)
         self.decisions += 1
-        propensity = self._propensity(state, arm, eligible)
+        propensity = self._propensity(state, arm, eligible, floor)
         return Decision(state, arm, samples, propensity, eligible, forced_control)
 
     def update(self, state: ChatState, arm: Arm, reward: float) -> None:
@@ -108,10 +129,12 @@ class Bandit:
                 cell.alpha, cell.beta, cell.pulls = row["alpha"], row["beta"], row["pulls"]
 
     def _propensity(self, state: ChatState, arm: Arm,
-                    eligible: tuple[Arm, ...]) -> float:
+                    eligible: tuple[Arm, ...], floor: float) -> float:
         """P(this arm wins) under the current posteriors, by Monte Carlo.
 
-        One extra logged field, and the whole answer to off-policy evaluation later.
+        One extra logged field, and the whole answer to off-policy evaluation later. It
+        takes the same `floor` the draw actually used: a logged propensity that describes a
+        different policy than the one that ran is worse than logging nothing.
         """
         wins = 0
         for _ in range(PROPENSITY_SAMPLES):
@@ -121,8 +144,8 @@ class Bandit:
         if Arm.NOTHING not in eligible or len(eligible) == 1:
             return thompson
         if arm is Arm.NOTHING:
-            return MIN_NOTHING_PROBABILITY + (1 - MIN_NOTHING_PROBABILITY) * thompson
-        return (1 - MIN_NOTHING_PROBABILITY) * thompson
+            return floor + (1 - floor) * thompson
+        return (1 - floor) * thompson
 
     def _eligible(self, eligible: Iterable[Arm] | None) -> tuple[Arm, ...]:
         requested = self.arms if eligible is None else tuple(eligible)
@@ -157,7 +180,8 @@ class RandomPolicy:
         self._rng = random.Random(self.seed)
 
     def select(
-        self, state: ChatState, eligible: Iterable[Arm] | None = None
+        self, state: ChatState, eligible: Iterable[Arm] | None = None,
+        nothing_floor: float | None = None,  # baselines do not buy controls
     ) -> Decision:
         eligible = tuple(eligible or self.arms)
         self.decisions += 1
@@ -180,7 +204,8 @@ class TimerPolicy:
     decisions: int = 0
 
     def select(
-        self, state: ChatState, eligible: Iterable[Arm] | None = None
+        self, state: ChatState, eligible: Iterable[Arm] | None = None,
+        nothing_floor: float | None = None,  # baselines do not buy controls
     ) -> Decision:
         eligible = tuple(eligible or (Arm.NOTHING, self.arm))
         self.decisions += 1
@@ -209,7 +234,8 @@ class ReactivePolicy:
     decisions: int = 0
 
     def select(
-        self, state: ChatState, eligible: Iterable[Arm] | None = None
+        self, state: ChatState, eligible: Iterable[Arm] | None = None,
+        nothing_floor: float | None = None,  # baselines do not buy controls
     ) -> Decision:
         eligible = tuple(eligible or (Arm.NOTHING, self.arm))
         self.decisions += 1
@@ -232,7 +258,8 @@ class SilentPolicy:
     decisions: int = 0
 
     def select(
-        self, state: ChatState, eligible: Iterable[Arm] | None = None
+        self, state: ChatState, eligible: Iterable[Arm] | None = None,
+        nothing_floor: float | None = None,  # baselines do not buy controls
     ) -> Decision:
         eligible = tuple(eligible or (Arm.NOTHING,))
         self.decisions += 1

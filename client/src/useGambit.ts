@@ -28,16 +28,17 @@ export type GambitState = {
   context: ContextFrame | null;
   /** participation over time, for the ambient sparkline */
   spark: number[];
-  /** viewer count over time */
+  /** viewer count over time — "Viewers" */
   viewerSpark: number[];
-  /** unique chatters over time — the "active viewers" graph, same scale as viewerSpark */
+  /** unique chatters over time — "Talking", same scale as viewerSpark */
   activeViewersSpark: number[];
   /** msgs/min over time — the "engagement" graph */
   engagementSpark: number[];
-  /** comments + reactions (redemptions, gifts) over time — Session Info's activity graph */
+  /** messages + reactions (redemptions, gifts) per minute over time — "Activity" */
   actionsSpark: number[];
   /** Same three series, never truncated — Insights shows the whole session and zooms
-   *  into a range, so unlike the strip sparks above it can't drop old samples. */
+   *  into a range, so unlike the strip sparks above it can't drop old samples. Which of
+   *  these each surface draws, under what name, is `metrics.ts`. */
   viewerHistory: number[];
   activeViewersHistory: number[];
   actionsHistory: number[];
@@ -165,7 +166,10 @@ function reduce(s: GambitState, m: Msg): GambitState {
         actionsSpark: [...s.actionsSpark.slice(-MAX_SPARK + 1), f.actions_per_min],
         viewerHistory: [...s.viewerHistory, f.viewer_count ?? 0],
         activeViewersHistory: [...s.activeViewersHistory, f.unique_chatters],
-        actionsHistory: [...s.actionsHistory, f.msgs_per_min],
+        // `actions_per_min`, matching `actionsSpark` above. This read `msgs_per_min` while
+        // nothing consumed it; Insights draws it now, and the same series under the same
+        // label has to be the same number on both surfaces.
+        actionsHistory: [...s.actionsHistory, f.actions_per_min],
         historyElapsedS: [...s.historyElapsedS, f.uptime_s],
         tick: s.tick + 1,
       };

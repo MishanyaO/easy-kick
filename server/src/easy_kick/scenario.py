@@ -6,11 +6,19 @@ What it is *not* is a script: the arc, who talks, when the bot decides, which ta
 and how the room answers are all drawn from one seeded RNG. Same seed, same show; a new seed,
 a genuinely different one.
 
-Everything downstream of the chat is production code. Messages go through the real
-``EventStore``, ``EngagementMonitor`` classifies the room from those messages alone, Thompson
-sampling picks the tactic, ``RewardBook`` scores the window against matched quiet controls, and
-the votes are counted by the same parser a live Kick poll goes through. The only thing this
-module knows that the policy does not is ``AUDIENCE`` — the hidden truth it has to discover.
+Everything downstream of the chat is production code, and that now includes the decision
+itself: this module supplies a world — a virtual clock, a room that talks, copy written for
+the beat it is sent in, and a hidden response curve — and hands each tick to the real
+``Controller``. So the same rails a streamer sets for live traffic apply here. An arm left
+on `ask` raises an approval card instead of firing, `manual` mode hands firing to the
+fire-rate sliders, the kill switch stops it, and chat digests surface. That used to be a
+second decision loop living here, which meant the story ignored every one of those settings.
+
+Messages go through the real ``EventStore``, ``EngagementMonitor`` classifies the room from
+those messages alone, Thompson sampling picks the tactic, ``RewardBook`` scores the window
+against matched quiet controls, and the votes are counted by the same parser a live Kick
+poll goes through. The only thing this module knows that the policy does not is ``AUDIENCE``
+— the hidden truth it has to discover.
 """
 
 from __future__ import annotations
@@ -25,11 +33,11 @@ from datetime import datetime, timezone
 
 from .bandit import Bandit
 from .context import StreamContext
-from .controller import COOLDOWN_S, TICK_S, ballots
+from .controller import COOLDOWN_S, TICK_S, Card as ControllerCard, Controller
 from .engagement import BOT_NAME, EngagementMonitor
 from .hub import EventHub
-from .models import Arm, ChatState, EventEnvelope, EventType
-from .reward import RewardBook, Window
+from .models import APPROVAL_ONLY_ARMS, Arm, Autonomy, ChatState, EventEnvelope, EventType
+from .reward import RewardBook
 from .store import EventStore
 
 SCENARIO_NAME = "ranked_run"
@@ -61,12 +69,15 @@ AUDIENCE = {
     (ChatState.LULL, Arm.EMOTE_RALLY): 18.0,
     (ChatState.LULL, Arm.CHAT_POLL): 15.0,
     (ChatState.LULL, Arm.QUIZ): 11.0,
+    (ChatState.LULL, Arm.PREDICTION): 20.0,
     (ChatState.STEADY, Arm.EMOTE_RALLY): 10.0,
     (ChatState.STEADY, Arm.CHAT_POLL): 9.0,
     (ChatState.STEADY, Arm.QUIZ): 6.0,
+    (ChatState.STEADY, Arm.PREDICTION): 13.0,
     (ChatState.SPIKE, Arm.EMOTE_RALLY): -5.0,
     (ChatState.SPIKE, Arm.CHAT_POLL): -8.0,
     (ChatState.SPIKE, Arm.QUIZ): -10.0,
+    (ChatState.SPIKE, Arm.PREDICTION): -4.0,
 }
 
 
@@ -117,6 +128,8 @@ CARDS: dict[str, tuple[Card, ...]] = {
         Card(Arm.QUIZ, "Quiz", "while we heal: max shield, 100 or 150?", ("100", "150")),
         Card(Arm.QUIZ, "Quiz", "vault key on this map — blue or gold?", ("blue", "gold")),
         Card(Arm.QUIZ, "Quiz", "does smoke cancel the scan: yes or no?", ("yes", "no")),
+        Card(Arm.PREDICTION, "Prediction", "/prediction Top ten next match? | yes | no"),
+        Card(Arm.PREDICTION, "Prediction", "/prediction Hot drop survives? | yes | no"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "quiet lobby, loud chat — emote check"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "drop an emote if you're still here"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "spam something while we queue"),
@@ -131,6 +144,8 @@ CARDS: dict[str, tuple[Card, ...]] = {
         Card(Arm.QUIZ, "Quiz", "what won that game: height or aim?", ("height", "aim")),
         Card(Arm.QUIZ, "Quiz", "squads left at the end — 3 or 4?", ("3", "4")),
         Card(Arm.QUIZ, "Quiz", "is that gun a buff or a nerf this season?", ("buff", "nerf")),
+        Card(Arm.PREDICTION, "Prediction", "/prediction Win this match? | yes | no"),
+        Card(Arm.PREDICTION, "Prediction", "/prediction Five eliminations? | over | under"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "GG in chat"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "W in chat if that was clean"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "emote if you're staying for one more"),
@@ -142,6 +157,8 @@ CARDS: dict[str, tuple[Card, ...]] = {
         Card(Arm.QUIZ, "Quiz", "does that shield break in one shot: yes or no?",
              ("yes", "no")),
         Card(Arm.QUIZ, "Quiz", "who has the angle here — us or them?", ("us", "them")),
+        Card(Arm.PREDICTION, "Prediction", "/prediction They win this fight? | yes | no"),
+        Card(Arm.PREDICTION, "Prediction", "/prediction Escapes the third party? | yes | no"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "emote if he wins this one"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "spam it if that shot lands"),
     ),
@@ -151,6 +168,8 @@ CARDS: dict[str, tuple[Card, ...]] = {
         Card(Arm.QUIZ, "Quiz", "is height worth more than shield here — yes or no?",
              ("yes", "no")),
         Card(Arm.QUIZ, "Quiz", "last one standing gets what, 1 point or 2?", ("1", "2")),
+        Card(Arm.PREDICTION, "Prediction", "/prediction Do they clutch it? | yes | no"),
+        Card(Arm.PREDICTION, "Prediction", "/prediction Final fight win? | yes | no"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "EMOTE WALL NOW"),
         Card(Arm.EMOTE_RALLY, "Emote rally", "SPAM IT"),
     ),
@@ -238,6 +257,7 @@ class Scenario:
         publish,
         context: StreamContext | None = None,
         base_epoch: float | None = None,
+        controller: Controller | None = None,
     ):
         self._rng = random.Random(seed)
         self._store = store
@@ -248,9 +268,30 @@ class Scenario:
         self._context.category = self._context.category or "Fortnite"
         self._base_epoch = time.time() if base_epoch is None else base_epoch
         # Production measurement, unmodified: it reads the store and nothing else, so it sees
-        # exactly what it would see on live Kick traffic.
+        # exactly what it would see on live Kick traffic. Ours is only consulted for the
+        # pacing gate and the status strip — the controller measures the room itself.
         self._monitor = EngagementMonitor(store, self._context)
-        self._rewards = RewardBook(self._monitor)
+        # The app hands us the controller the dashboard is already wired to, so its rails
+        # are the ones on screen. Standalone — tests, a headless replay — there is nobody
+        # at the keyboard, so build one and take the rails off: an unanswered card is a
+        # voided window, and `prediction` can never be answered without a human.
+        self._controller = controller if controller is not None else Controller(
+            monitor=self._monitor,
+            bandit=bandit,
+            rewards=RewardBook(self._monitor),
+            context=self._context,
+            store=store,
+            publish=publish,
+        )
+        if controller is None:
+            self._controller.autonomy = dict.fromkeys(
+                self._controller.autonomy, Autonomy.AUTO
+            )
+            for arm in APPROVAL_ONLY_ARMS:
+                self._controller.autonomy[arm] = Autonomy.OFF
+        self._controller.perform = self._fire
+        self._controller.compose = self._compose
+        self._controller.evidence_origin = "scenario"
 
         regulars = [Persona(name, self._rng.random()) for name in REGULARS]
         pool = [stem + tag for stem in LURKER_STEMS for tag in LURKER_TAGS]
@@ -269,7 +310,6 @@ class Scenario:
         self.viewers = VIEWERS
         self.state = ChatState.STEADY
         self.completed = False
-        self.decisions = 0
         self.interventions = 0
         self.match = 1
 
@@ -284,15 +324,27 @@ class Scenario:
         self._schedule_chat()
         self._replies: list[tuple[float, str, str]] = []
         self._recent: deque[str] = deque(maxlen=8)
-        self._window: Window | None = None
-        self._card: Card | None = None
-        self._fired_at: float | None = None
+        # What the controller said into chat during the tick we are inside, collected so
+        # `step` can hand every envelope back in time order like any other line.
+        self._spoken: list[EventEnvelope] = []
         self._opened = False
 
     @property
     def now(self) -> float:
         """Virtual time as a unix timestamp, so envelope times and the measurement agree."""
         return self._base_epoch + self.t
+
+    @property
+    def controller(self) -> Controller:
+        """The controller driving the story — the app's own, when the app started it, so
+        the rails on this are the rails showing in Channel Actions."""
+        return self._controller
+
+    @property
+    def decisions(self) -> int:
+        """Moves the controller has opened. Read back from it rather than tallied here,
+        so the operator strip cannot drift from what actually happened."""
+        return self._controller.decisions
 
     def status(self) -> dict[str, object]:
         return {
@@ -379,125 +431,56 @@ class Scenario:
     # --- the decision loop -----------------------------------------------------------
 
     def _decide(self) -> list[EventEnvelope]:
+        """Hand the tick to the production controller, and let it act on our world.
+
+        Everything the decision needs is already in the store it shares with us, so the
+        controller measures the room, picks the tactic, opens and closes the window, and
+        publishes every frame — under whatever rails the streamer has set. All we add is
+        whether it may open a move at all, which is what paces the show.
+        """
         now = self.now
         self._drift_viewers()
         self._context.viewer_count = self.viewers
-        metrics = self._monitor.measure(now)
-        self.state = self._monitor.classify(metrics)
-        self._publish(
-            "controller.context",
-            self._context.frame(now, metrics.participation, metrics.unique_chatters,
-                                metrics.msgs_per_min, metrics.actions_per_min),
-        )
-        if self._window is not None:
-            self._publish_poll(now)
-            if now >= self._window.closes_at:
-                self._close(now)
-            return []
-        if self.t < WARMUP_S:
-            return []  # the baseline means nothing until there is a stream to compare to
-        if self._fired_at is not None and now - self._fired_at < COOLDOWN_S:
-            return []
-        if self._rng.random() >= URGE[self.state]:
-            return []
-        return self._act(metrics, now)
+        self.state = self._monitor.classify(self._monitor.measure(now))
+        self._spoken = []
+        self._controller.tick(now, may_act=self._may_act())
+        return self._spoken
 
-    def _act(self, metrics, now: float) -> list[EventEnvelope]:
-        decision = self._bandit.select(self.state)
-        action_id = uuid.uuid4().hex[:12]
-        spoken: list[EventEnvelope] = []
-        # `nothing` says nothing but still opens a window: without one its posterior never
-        # updates, and the arm that is supposed to win during a clutch could never win.
-        card = None if decision.arm is Arm.NOTHING else self._compose(decision.arm)
-        if card is not None:
-            self._publish(
-                "controller.action",
-                {
-                    "type": "action",
-                    "id": action_id,
-                    "ts": _iso(now),
-                    "kind": decision.arm,
-                    "trigger": self.state,
-                    "state": self.state,
-                    "propensity": decision.propensity,
-                    "autonomy": "auto",
-                    "reason": f"{self.state}: {metrics.participation:.1%} of viewers talking",
-                    "title": card.title,
-                    "body": card.body,
-                    "options": list(card.options),
-                    "auto_fire": True,
-                    "status": "sending",
-                },
-            )
-            # A real chat event, like every other line — the measurement then has to know to
-            # leave our own message out of the participation it credits us with.
-            spoken.append(self._say(BOT_NAME, card.body))
-        # Contamination is read off the *previous* fire, so the window opens before this one
-        # is recorded — otherwise every fired window flags itself.
-        self._window = self._rewards.open(
-            action_id, self.state, decision.arm, now, fired=card is not None
-        )
-        self._card = card
-        if card is not None:
-            self._rewards.note_fire(now)
-            self._fired_at = now
-            self.interventions += 1
-            self._respond(decision.arm, card)
-        self.decisions += 1
-        self._publish(
-            "controller.bandit",
-            {**self._bandit.snapshot(), "type": "bandit", "ts": _iso(now),
-             "evidence_origin": "scenario", "last_decision": decision.frame()},
-        )
-        return spoken
+    def _may_act(self) -> bool:
+        """Whether the bot gets to spend this decision on the room it can currently see.
 
-    def _close(self, now: float) -> None:
-        window, card = self._window, self._card
-        self._window = self._card = None
-        outcome = self._rewards.close(window, now)
-        votes, _ = ballots(
-            self._store, list(card.options) if card else [], window.opened_at
-        )
-        # A window nobody can attribute teaches nothing, exactly as in the live controller.
-        if outcome.contaminated is None:
-            self._bandit.update(window.state, window.arm, outcome.reward)
-        self._publish(
-            "controller.result",
-            {
-                "type": "result",
-                "action_id": window.id,
-                "state": window.state,
-                "arm": window.arm,
-                # Simulated evidence stays labelled as such wherever it is shown, however
-                # real the measurement behind it was.
-                "origin": "scenario",
-                "votes": votes,
-                "engagement_delta": outcome.lift,
-                "reward": outcome.reward,
-                "lift_naive": outcome.lift_naive,
-                "contaminated": outcome.contaminated,
-                "controls": outcome.controls,
-                "outcome": "fired" if window.fired else "skipped",
-            },
-        )
-        self._publish_policy(now)
+        The baseline means nothing until there is a stream to compare against, and after
+        that it is deliberately mild: a rail that refused to act during a spike would hand
+        the policy the answer it is supposed to *learn*, so this leans toward a quiet room
+        and no further.
+        """
+        return self.t >= WARMUP_S and self._rng.random() < URGE[self.state]
 
-    def _compose(self, arm: Arm) -> Card:
+    def _fire(self, action_id: str, arm: Arm, state: ChatState, card: ControllerCard) -> bool:
+        """The controller's delivery adapter. Our line lands in chat as a real message like
+        every other one — the measurement then has to know to leave it out of the
+        participation it credits us with — and the room answers it."""
+        self._spoken.append(self._say(BOT_NAME, card.body))
+        self.interventions += 1
+        self._respond(state, arm, tuple(card.options))
+        return True
+
+    def _compose(self, arm: Arm) -> ControllerCard:
         """Copy that belongs to this moment, and that chat has not just heard."""
         pool = [card for card in CARDS[self._phase.kind] if card.arm is arm]
         fresh = [card for card in pool if card.body not in self._recent]
         card = self._rng.choice(fresh or pool)
         self._recent.append(card.body)
-        return card
+        return ControllerCard(card.title, card.body, list(card.options))
 
-    def _respond(self, arm: Arm, card: Card) -> None:
+    def _respond(self, state: ChatState, arm: Arm, options: tuple[str, ...]) -> None:
         """The room answers — or stops talking, which is also an answer."""
-        mean = AUDIENCE[self.state, arm]
+        mean = AUDIENCE[state, arm]
         count = round(self._rng.gauss(mean, abs(mean) * RESPONSE_SPREAD))
         if count > 0:
             for who in self._rng.sample(self.personas, min(count, len(self.personas))):
                 at = self.t + self._rng.uniform(2.0, RESPONSE_WINDOW_S)
-                insort(self._replies, (at, who.name, self._reply(who, card)))
+                insort(self._replies, (at, who.name, self._reply(who, options)))
         elif count < 0:
             # Interrupted at the wrong moment, people stop typing rather than argue about it.
             # Suppressing the ambient rate is what makes a backfire show up in the measurement
@@ -509,11 +492,11 @@ class Scenario:
                 at = self.t + self._rng.uniform(2.0, 12.0)
                 insort(self._replies, (at, who.name, self._rng.choice(ANNOYED)))
 
-    def _reply(self, who: Persona, card: Card) -> str:
-        if not card.options:
+    def _reply(self, who: Persona, options: tuple[str, ...]) -> str:
+        if not options:
             return self._rng.choice(RALLY)
-        index = min(int(who.lean * len(card.options)), len(card.options) - 1)
-        return self._rng.choice(BALLOTS).format(opt=card.options[index])
+        index = min(int(who.lean * len(options)), len(options) - 1)
+        return self._rng.choice(BALLOTS).format(opt=options[index])
 
     def _drift_viewers(self) -> None:
         """Loosely tied to the arc, and deliberately so: a clutch play makes the people
@@ -525,28 +508,6 @@ class Scenario:
         )
 
     # --- frames ----------------------------------------------------------------------
-
-    def _publish_poll(self, now: float) -> None:
-        """The open tally, republished every tick — the one moment a viewer is doing
-        something is the one moment the streamer should be able to watch it."""
-        window, card = self._window, self._card
-        if not (window and window.fired and card and card.options):
-            return
-        votes, voters = ballots(self._store, list(card.options), window.opened_at)
-        self._publish(
-            "controller.poll",
-            {
-                "type": "poll",
-                "ts": _iso(now),
-                "action_id": window.id,
-                "arm": window.arm,
-                "question": card.body,
-                "options": list(card.options),
-                "votes": votes,
-                "voters": voters,
-                "closes_in_s": max(0.0, round(window.closes_at - now, 1)),
-            },
-        )
 
     def _publish_policy(self, now: float | None = None) -> None:
         self._publish(

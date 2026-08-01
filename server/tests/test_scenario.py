@@ -10,13 +10,27 @@ from easy_kick.context import StreamContext
 from easy_kick.controller import COOLDOWN_S
 from easy_kick.engagement import BOT_NAME
 from easy_kick.hub import EventHub
-from easy_kick.models import BANDIT_ARMS, Arm, ChatState, EventType, parse_timestamp
+from easy_kick.models import (
+    APPROVAL_ONLY_ARMS,
+    BANDIT_ARMS,
+    Arm,
+    Autonomy,
+    ChatState,
+    EventType,
+    parse_timestamp,
+)
 from easy_kick.reward import WINDOW_S
 from easy_kick.scenario import AUDIENCE, RUN_S, Scenario, catalogue
 from easy_kick.store import EventStore
 
 EPOCH = 1_750_000_000.0
 NOISE_BAND = 0.005  # mirrors the client's verdict threshold in `types.ts`
+# What a standalone run can actually send. `prediction` stakes viewers' Channel Points and
+# is human-gated at the delivery boundary whatever the autonomy map says, so headless — with
+# nobody at the keyboard to approve one — it is switched off rather than left to expire.
+UNATTENDED_ARMS = tuple(
+    arm for arm in BANDIT_ARMS if arm not in APPROVAL_ONLY_ARMS and arm is not Arm.NOTHING
+)
 
 
 class Run:
@@ -98,8 +112,11 @@ def test_a_session_is_dozens_of_interventions_across_every_tactic():
     session = run(7)
     results = session.frames_of("result")
 
-    assert len(session.fired) >= 30
-    assert {r["arm"] for r in results} == set(BANDIT_ARMS)
+    # The production rails bind here, which is the point of running the story through them:
+    # `ARM_CAP_PER_HOUR` holds each tactic to four fires an hour, so two virtual hours of
+    # the three unattended tactics is two dozen interventions and not an unlimited stream.
+    assert len(session.fired) >= 20
+    assert {r["arm"] for r in results} == set(UNATTENDED_ARMS) | {Arm.NOTHING}
     assert {r["state"] for r in results} == set(ChatState)
     # Every fired result closes an action chat actually saw, in the order they were sent.
     # A window still open when the stream ends never resolves; that is the only slack.
@@ -108,7 +125,6 @@ def test_a_session_is_dozens_of_interventions_across_every_tactic():
     assert actions[:len(fired)] == fired
     assert len(actions) - len(fired) <= 1
     assert len(results) >= session.scenario.decisions - 1
-    assert session.bandit.decisions == session.scenario.decisions
 
 
 def test_the_bot_waits_on_the_room_rather_than_on_a_timer():
@@ -116,7 +132,7 @@ def test_the_bot_waits_on_the_room_rather_than_on_a_timer():
     lines = [line for line in session.transcript() if line[1] == BOT_NAME]
     gaps = session.gaps(lines)
 
-    assert len(gaps) >= 30
+    assert len(gaps) >= 20
     # The cooldown is a floor it may sit on, never a period it repeats: the spacing has to
     # spread well past it, because what decides the next one is what chat is doing.
     assert min(gaps) >= COOLDOWN_S
@@ -208,7 +224,11 @@ def test_quiet_windows_are_the_control_every_intervention_is_read_against():
 
 
 def test_the_policy_finds_the_table_it_is_never_shown():
-    fired = [r for seed in (7, 11, 42) for r in run(seed).fired]
+    # Six sessions, not three. A spike is a short beat and the bot is deliberately reluctant
+    # to interrupt one, so spike windows are the scarcest evidence in any single run — and
+    # the claim here is about the world's expected value, which needs enough of them that
+    # the sign is the world's and not the sampler's.
+    fired = [r for seed in (7, 11, 42, 3, 19, 55) for r in run(seed).fired]
     by_state = {
         state: [r["engagement_delta"] for r in fired if r["state"] == state]
         for state in ChatState
@@ -222,6 +242,51 @@ def test_the_policy_finds_the_table_it_is_never_shown():
     pulls = sum(cell.pulls for cell in run(7).bandit.cells.values())
     assert pulls >= 30
     assert pulls <= len(run(7).frames_of("result"))  # contaminated windows teach nothing
+
+
+def test_an_arm_left_on_ask_raises_a_card_instead_of_firing():
+    """The story runs under whatever rails the streamer set, because it runs through the
+    same controller they set them on.
+
+    This is the bug that made the dashboard's Insights panel dead air for a whole prepared
+    run: the story used to carry its own decision loop, so every tactic auto-fired, no
+    approval card was ever raised, no digest was ever surfaced, and the panel — which shows
+    exactly those two things — had nothing to say from start to finish.
+    """
+    frames: list[tuple[str, dict]] = []
+    scenario = build(7, record=frames.append)
+    for arm in UNATTENDED_ARMS:
+        scenario.controller.autonomy[arm] = Autonomy.ASK
+
+    said: list[str] = []
+    while not scenario.completed and not any(f["type"] == "action" for _, f in frames):
+        said += [
+            event.payload["content"]
+            for event in scenario.step(scenario.next_due_in())
+            if event.username("sender") == BOT_NAME
+        ]
+
+    card = next(f for _, f in frames if f["type"] == "action")
+    assert card["autonomy"] == Autonomy.ASK
+    assert card["auto_fire"] is False
+    assert card["status"] == "suggested"
+    # Nothing reached chat: a card waiting on the streamer has asked the room nothing.
+    assert said == []
+    assert scenario.interventions == 0
+
+
+def test_the_kill_switch_stops_the_story_dead():
+    frames: list[tuple[str, dict]] = []
+    scenario = build(11, record=frames.append)
+    scenario.controller.enabled = False
+
+    while not scenario.completed:
+        scenario.step(scenario.next_due_in())
+
+    assert not [f for _, f in frames if f["type"] in ("action", "result", "digest")]
+    assert scenario.interventions == 0
+    # The room still runs and is still measured — it is the bot that is switched off.
+    assert [f for _, f in frames if f["type"] == "context"]
 
 
 def test_the_run_sheet_publishes_the_ground_truth_and_the_status_reads_out_loud():

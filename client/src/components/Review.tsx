@@ -1,197 +1,121 @@
-// Review mode — R7 on real data. Rows grouped by verdict, state tiles that summarise and
-// filter, and a Tactics tab reading the live bandit posteriors.
+// Review mode — R7 on real data. A pivot of the session that doubles as its filter, and one
+// sortable ledger under it.
 //
-// Every group collapses and every row opens. Both matter for the same reason: the ledger
-// has one line per decision and a session takes hundreds, so the default view has to be
-// scannable by someone mid-stream, and the depth has to be one click away rather than
-// spread across every row at once.
-import { useEffect, useState, type ReactNode } from 'react';
+// This was four summary tiles over a grid of 84px cards inside collapsible verdict groups,
+// and it lost on the only job the surface has: comparing things. Four tiles put four figures
+// at four different x positions, so "is a lull better than a spike" meant reading three
+// separate blocks and holding them in your head. The card grid was worse — a wrapping
+// masonry of fixed-height cards has no columns, so no value on it can be scanned down, and
+// the collapsible groups hid the comparison behind a click each.
+//
+// Both are tables now, because every question this page is asked is a comparison:
+//
+//   The pivot is chat state × outcome, counted. It answers "where is this session actually
+//   spending its windows" at a glance, and every cell in it is a filter — click the LULL
+//   row's BACKFIRED cell and the ledger below is those windows. A row header filters the
+//   state, a column header the outcome, the same cell again clears it. A summary that is
+//   also the control is one object to learn instead of two, which is how the old filter
+//   tiles and the old group headers collapse into a single thing.
+//
+//   The ledger is one row per window on a fixed column grid, so time, state, tactic, verdict
+//   and lift each read down a column, and any of them sorts. Sorting is what replaced the
+//   verdict groups: "show me the worst backfires" is a click on LIFT, not a hunt through an
+//   expanded section. Rows are ~32px instead of 84px cards, so roughly three times as much
+//   of the session is on screen at once.
+//
+// Colour is spent in exactly one place — the VERDICT and LIFT columns, side by side at the
+// right, reading as one unit. The old cards carried the same verdict three times over, as a
+// left border, a coloured group heading and a coloured number.
+import { useEffect, useState } from 'react';
 import { ChevronRight, Radar } from 'lucide-react';
 import type { GambitState } from '../useGambit';
 import {
-  ARM_LABEL, NOISE_BAND, STATE_LABEL, VERDICT_COLOR, labelFor, isControl, points, pct,
-  peopleShort, whyUnattributable,
+  ARM_LABEL, NOISE_BAND, STATE_LABEL, STATE_PHRASE, VERDICT_BLURB, VERDICT_COLOR, clock,
+  isControl, labelFor, peopleShort, points, whyUnattributable,
   type Arm, type ChatState, type VerdictLabel,
 } from '../types';
 import InsightsGraph from './InsightsGraph';
 import PolicyMap from './PolicyMap';
 import ResultDetail, { type History, type LedgerRow } from './ResultDetail';
+import { LIVE_METRICS } from '../metrics';
 
 type Row = LedgerRow;
-type Filter = 'all' | ChatState;
 type Tab = 'actions' | 'tactics';
+
+/** Which pile a window lands in: the four verdicts, plus the two piles that are not verdicts
+ *  — windows that never reached chat, and the ones where staying quiet was the decision. */
+type Section = VerdictLabel | 'unsent' | 'control';
+/** The pivot's row axis. `all` is the totals row, and also the "no state filter" value. */
+type StateKey = 'all' | ChatState;
 
 /** `tactics` stays the state key — the tab is still where you go to ask "what works?" —
  *  but the surface behind it is a map of beliefs now, and "Tactics" undersold it. */
 const TABS: [Tab, string][] = [['actions', 'Actions'], ['tactics', 'Policy map']];
 
-/**
- * Every group starts collapsed, and the header has to survive that.
- *
- * A session produces hundreds of windows, so the useful default is a page you can take in
- * at a glance and drill into — not four expanded lists. That only works if a collapsed
- * header still says everything the group would: how many, what kind, and what it came to.
- * Summarising it is fine; hiding it is not.
- */
-const GROUPS: { verdict: VerdictLabel; blurb: string; start?: boolean }[] = [
-  // One group opens on arrival, because four collapsed headers over an empty half-page is
-  // a page that looks like it failed to load. It is the one you came to read.
-  { verdict: 'Worked', blurb: 'do more of these', start: true },
-  { verdict: 'Neutral', blurb: 'chat did not move' },
-  { verdict: 'Backfired', blurb: 'chat got quieter after — avoid these' },
-  { verdict: "Can't tell", blurb: 'no verdict is possible for these' },
-];
-
 const STATES: ChatState[] = ['lull', 'steady', 'spike'];
 /** A tactic needs this many tries in a state before its average is worth reading aloud. */
 const MIN_TRIES = 2;
 
+/** Every cell on both tables sits on the same hairline grid. One constant, so a column added
+ *  to either can't quietly ship at a different density from the rest of the row. */
+const CELL = 'border-b border-[var(--border)] px-2 py-1.5';
+const HEAD = 'text-label font-bold tracking-[0.14em]';
+/**
+ * The ledger's heading cells, pinned to the page's scroller.
+ *
+ * Each cell sticks on its own rather than the `<thead>` sticking as a block, because Chrome
+ * does not apply `z-index` to a table row group: the header stayed put but the rows scrolled
+ * straight through it, printing one row of the ledger on top of another. Per-cell, each
+ * heading is an ordinary positioned box with its own opaque background and the stacking works.
+ */
+const STICKY = 'sticky top-0 z-10 bg-[var(--bg-base)]';
+
 /** A window that never reached chat: skipped, expired, or the send itself failed. */
 const isUnsent = (r: Row) => r.outcome === 'dismissed' || r.outcome === 'send_failed';
 
-/** One ledger row, and its detail when the streamer opens it. */
-function Entry({ r, first, showState, history, bandit, chat, open, onToggle }: {
-  r: Row;
-  first: boolean;
-  showState: boolean;
-  history: History;
-  bandit: GambitState['bandit'];
-  chat: GambitState['chat'];
-  open: boolean;
-  onToggle: () => void;
-}) {
-  const crowd = r.outcome === 'fired' && !r.contaminated
-    ? peopleShort(r.engagement_delta, history.viewers[r.tick])
-    : null;
+/** What a summed lift is worth saying in, inside the noise band and out of it. Shared by the
+ *  hero and the pivot's NET LIFT column because they print the same figure — the hero used
+ *  to be unconditionally green, which meant a losing session announced its loss in the
+ *  colour of a win, directly above the same number in red. */
+const liftTint = (v: number) => (v > NOISE_BAND ? 'var(--kick-green)'
+  : v < -NOISE_BAND ? 'var(--danger)' : 'var(--text-secondary)');
 
-  return (
-    // `data-row` so a click on the chart's pin can find this row and scroll to it.
-    <div data-row={r.action_id}
-      style={{ borderTop: first ? undefined : '1px solid var(--border)' }}>
-      <button onClick={onToggle}
-        className="flex w-full items-center gap-3 bg-[var(--bg-surface)] px-3 py-3 text-left transition-colors hover:bg-[var(--bg-elevated)]">
-        <ChevronRight size={13} className="shrink-0 text-[var(--text-muted)]"
-          style={{ transform: open ? 'rotate(90deg)' : undefined, transition: 'transform .15s' }} />
-        {showState && (
-          <span className="w-14 shrink-0 text-label font-bold tracking-[0.12em] text-[var(--text-muted)]">
-            {STATE_LABEL[r.state]}
-          </span>
-        )}
-        <span className="w-24 shrink-0 truncate text-body text-[var(--text-secondary)]">
-          {ARM_LABEL[r.arm]}
-        </span>
-        {/* Spans, not divs and paragraphs: the row is a button, and a button may only
-            contain phrasing content. */}
-        <span className="min-w-0 flex-1">
-          {/* The biggest text in the row, on purpose: it is the line that actually went to
-              chat, and the one a demo reads out loud. */}
-          <span className="block truncate text-lead text-[var(--text-primary)]">
-            {r.action?.body ? `“${r.action.body}”` : (
-              <span className="italic text-[var(--text-muted)]">{r.outcome}</span>
-            )}
-          </span>
-          {/* Why, not just that: a `Can't tell` with no reason reads as a shrug, and the
-              reason is the part that survives questioning. */}
-          {whyUnattributable(r) && (
-            <span className="block truncate text-label text-[var(--warn)]">
-              {whyUnattributable(r)}
-            </span>
-          )}
-        </span>
-        {/* A poll's own outcome. Votes are the engagement signal for `chat_poll` — a lift
-            number alone hides whether anyone answered. */}
-        {Object.values(r.votes).some((n) => n > 0) && (
-          <span className="tnum shrink-0 rounded-sm bg-[var(--bg-elevated)] px-2 py-0.5 text-label text-[var(--text-secondary)]">
-            {Object.entries(r.votes).map(([k, n]) => `${k}:${n}`).join(' · ')}
-          </span>
-        )}
-        {/* Points are the comparable unit; people are the one the streamer feels. Both,
-            because they answer different questions. A window that never fired gets neither
-            — printing +0.0 pts against it invents a measurement that was never taken. */}
-        <span className="w-[112px] shrink-0 text-right">
-          {isUnsent(r) ? (
-            <span className="text-body text-[var(--text-muted)]">not measured</span>
-          ) : (
-            <>
-              <span className="tnum block text-stat font-bold leading-tight"
-                style={{ color: VERDICT_COLOR[labelFor(r)] }}>
-                {points(r.engagement_delta)}
-              </span>
-              {crowd && (
-                <span className="tnum block text-label text-[var(--text-muted)]">{crowd}</span>
-              )}
-            </>
-          )}
-        </span>
-      </button>
-      {open && <ResultDetail r={r} h={history} bandit={bandit} chat={chat} />}
-    </div>
-  );
-}
+/** Which pile a row belongs to. Controls and never-sents get their own rather than a
+ *  verdict, so this cannot just be `labelFor`. */
+const sectionOf = (r: Row): Section =>
+  isControl(r) ? 'control' : isUnsent(r) ? 'unsent' : labelFor(r);
 
 /**
- * Why the unattributable pile is unattributable, counted.
+ * The pivot's column axis, in the order a session is read: what worked, then what didn't,
+ * then what could not be read at all, then the two piles that were never interventions.
  *
- * A collapsed group still has to answer the question it raises, or collapsing it is just
- * hiding it. The reason strings come from the backend, so this matches on the stable part
- * of each and buckets anything new under a neutral count rather than guessing.
+ * Two names each. `head` has to survive a 100px column, so it is as short as the word can be
+ * cut; `long` is what the same pile is called in a sentence, where there is room to say it
+ * properly. `note` is the column's tooltip — a header of six one-word outcomes is six words
+ * six people will read six ways, and CAN'T TELL in particular means something specific here.
  */
-function reasonBreakdown(rows: Row[]): string {
-  const buckets = { overlap: 0, control: 0, other: 0 };
-  for (const r of rows) {
-    const why = whyUnattributable(r) ?? '';
-    if (why.includes('another action fired')) buckets.overlap++;
-    else if (why.includes('no quiet') || why.includes('nothing to')) buckets.control++;
-    else buckets.other++;
-  }
-  const hit = ([
-    [buckets.overlap, 'fired too soon after another action'],
-    [buckets.control, 'had no comparable quiet window yet'],
-    [buckets.other, 'unattributable for another reason'],
-  ] as [number, string][]).filter(([n]) => n > 0);
-  // The group header already prints the count. Repeating it — `CAN'T TELL 6 — 6 had no
-  // comparable quiet window` — makes a reader check whether the two numbers are the same
-  // number, which they always are when there is only one reason.
-  return hit.length === 1 ? hit[0][1] : hit.map(([n, label]) => `${n} ${label}`).join(' · ');
-}
+const SECTIONS: { key: Section; head: string; long: string; color: string; note: string }[] = [
+  { key: 'Worked', head: 'WORKED', long: 'worked',
+    color: VERDICT_COLOR.Worked, note: VERDICT_BLURB.Worked },
+  { key: 'Neutral', head: 'NEUTRAL', long: 'neutral',
+    color: VERDICT_COLOR.Neutral, note: VERDICT_BLURB.Neutral },
+  { key: 'Backfired', head: 'BACKFIRED', long: 'backfired',
+    color: VERDICT_COLOR.Backfired, note: VERDICT_BLURB.Backfired },
+  { key: "Can't tell", head: "CAN'T TELL", long: "can't tell",
+    color: VERDICT_COLOR["Can't tell"], note: VERDICT_BLURB["Can't tell"] },
+  { key: 'unsent', head: 'UNSENT', long: 'never sent', color: 'var(--text-secondary)',
+    note: 'you skipped these, or they expired waiting, or the send failed — nothing went to chat' },
+  { key: 'control', head: 'QUIET', long: 'stayed quiet', color: 'var(--text-muted)',
+    note: 'the control every intervention is measured against — deliberate quiet windows, scored the same way' },
+];
 
-/** A collapsible ledger section, headed by a line that reads the same collapsed or open. */
-function Group({ dot, title, color, count, note, trailing, open, onToggle, children }: {
-  dot: ReactNode;
-  title: string;
-  color: string;
-  count: number;
-  note: string;
-  /** The group's own total, so the collapsed header is a result and not just a label. */
-  trailing?: string;
-  open: boolean;
-  onToggle: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <section>
-      <button onClick={onToggle}
-        className="mb-1.5 flex w-full items-baseline gap-2 rounded-sm px-1 py-1.5 text-left transition-colors hover:bg-[var(--bg-elevated)]">
-        <ChevronRight size={14} className="shrink-0 self-center text-[var(--text-muted)]"
-          style={{ transform: open ? 'rotate(90deg)' : undefined, transition: 'transform .15s' }} />
-        {dot}
-        <span className="shrink-0 text-body font-bold tracking-[0.18em]" style={{ color }}>
-          {title}
-        </span>
-        <span className="tnum shrink-0 text-body font-semibold text-[var(--text-secondary)]">
-          {count}
-        </span>
-        <span className="truncate text-body text-[var(--text-muted)]">— {note}</span>
-        {trailing && (
-          <span className="tnum ml-auto shrink-0 text-lead font-bold" style={{ color }}>
-            {trailing}
-          </span>
-        )}
-      </button>
-      {open && children}
-    </section>
-  );
-}
+/** The ledger's sort order for VERDICT, and the pivot's column order. One list, so sorting by
+ *  verdict walks the pivot left to right. */
+const SECTION_ORDER = SECTIONS.map((s) => s.key);
+/** The prose name of a pile, for the caption and the empty line. */
+const SECTION_LONG = Object.fromEntries(
+  SECTIONS.map((s) => [s.key, s.long]),
+) as Record<Section, string>;
 
 /**
  * The best tactic in one chat state by measured average, or undefined while the evidence is
@@ -219,29 +143,31 @@ function bestTactic(rows: Row[], state: ChatState) {
  * "nothing yet" is a wasted first impression — the shape of the thing is interesting even
  * before there is data in it.
  */
-function Empty({ icon, kicker, title, blurb, steps }: {
-  icon: ReactNode;
-  kicker: string;
-  title: string;
-  blurb: string;
-  steps: [string, string][];
-}) {
+function Empty() {
   return (
-    <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto py-6">
+    <div className="flex justify-center py-10">
       <div className="w-full max-w-[560px] rounded-sm border border-dashed border-[var(--border)] bg-[var(--bg-elevated)] p-6 text-center">
         <div className="mx-auto flex size-11 items-center justify-center rounded-full bg-[var(--bg-surface)] text-[var(--kick-green)]">
-          {icon}
+          <Radar size={18} />
         </div>
         <div className="mt-3 text-label font-bold tracking-[0.2em] text-[var(--text-muted)]">
-          {kicker}
+          NO CLOSED WINDOWS YET
         </div>
-        <h3 className="mt-1 text-stat font-semibold text-[var(--text-primary)]">{title}</h3>
+        <h3 className="mt-1 text-stat font-semibold text-[var(--text-primary)]">
+          The ledger fills itself
+        </h3>
         <p className="mx-auto mt-2 max-w-[440px] text-body leading-relaxed text-[var(--text-secondary)]">
-          {blurb}
+          Every decision opens a 60-second window and lands here when it closes — including
+          the decisions to stay quiet, which are the control everything else is measured
+          against.
         </p>
 
         <ol className="mt-5 space-y-2 text-left">
-          {steps.map(([step, why], i) => (
+          {([
+            ['Watch', 'participation is sampled continuously and classified lull / steady / spike'],
+            ['Act, or deliberately not', 'a tactic fires, or the “nothing” tactic wins — either way a window opens'],
+            ['Measure against a matched control', 'the lift is against comparable quiet windows, never just before-and-after'],
+          ] as [string, string][]).map(([step, why], i) => (
             <li key={step} className="flex gap-3 rounded-sm bg-[var(--bg-surface)] px-3 py-2.5">
               <span className="tnum mt-px shrink-0 text-body font-bold text-[var(--kick-green)]">
                 {i + 1}
@@ -259,88 +185,341 @@ function Empty({ icon, kicker, title, blurb, steps }: {
 }
 
 /**
- * A state summary that doubles as the filter control for the ledger below it — and carries
- * the finding for that state, which is the one thing on this page a streamer can act on
- * without reading anything else. It lived in its own band for a while; a row of cards
- * saying "in a lull…" directly under a row of tiles labelled LULL was the same thought
- * printed twice.
+ * One count in the pivot, and the filter that count describes.
+ *
+ * The cross highlight is the whole reason a pivot is readable: you find a number by tracking
+ * a row and a column to where they meet, so both arms of the current selection are lit and
+ * only their intersection goes green. Without it "which cell am I in" is a question the
+ * table makes you answer.
  */
-function Tile({ k, label, set, all, active, onSelect }: {
-  k: Filter;
-  label: string;
-  set: Row[];
-  /** Every result, unfiltered — a finding is computed over the whole session. */
-  all: Row[];
-  active: boolean;
-  onSelect: (k: Filter) => void;
+function Cell({ st, sec, n, at, strong, onPick }: {
+  st: StateKey;
+  sec: Section | 'all';
+  n: number;
+  /** Where the filter currently is, for the cross. */
+  at: { state: StateKey; section: Section | 'all' };
+  /** The row's own total — the one figure per row that carries weight. */
+  strong?: boolean;
+  onPick: (state: StateKey, section: Section | 'all') => void;
 }) {
-  const f = set.filter((r) => r.outcome === 'fired');
-  const total = f.reduce((a, r) => a + r.engagement_delta, 0);
-  const best = k === 'all' ? undefined : bestTactic(all, k);
-  const tint = total > NOISE_BAND ? 'var(--kick-green)'
-    : total < -NOISE_BAND ? 'var(--danger)' : 'var(--text-secondary)';
+  const here = at.state === st && at.section === sec;
+  const arm = at.state === st || at.section === sec;
+  const bg = here
+    ? 'bg-[var(--kick-green)]/15 hover:bg-[var(--kick-green)]/25'
+    : arm
+      ? 'bg-[var(--bg-surface)] hover:bg-[var(--bg-elevated)]'
+      : 'hover:bg-[var(--bg-elevated)]';
 
   return (
-    <button onClick={() => onSelect(k)}
-      className="min-w-0 flex-1 rounded-sm border px-3 py-2.5 text-left transition-colors"
-      style={{
-        borderColor: active ? 'var(--kick-green)' : 'var(--border)',
-        background: active ? 'var(--bg-elevated)' : 'transparent',
-      }}>
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-label font-bold tracking-[0.18em] text-[var(--text-muted)]">
-          {label}
-        </span>
-        <span className="tnum shrink-0 text-label text-[var(--text-muted)]">
-          {f.filter((r) => labelFor(r) === 'Worked').length}/{f.length} worked
-        </span>
-      </div>
-      <div className="tnum mt-0.5 text-big font-bold leading-tight" style={{ color: tint }}>
-        {points(total)}
-      </div>
-      <div className="truncate text-body text-[var(--text-muted)]">
-        {k === 'all' ? 'every state, summed' : best ? (
-          <>
-            best: <span className="text-[var(--text-primary)]">{ARM_LABEL[best.arm]}</span>{' '}
-            {points(best.mean)} over {best.tries}
-          </>
-        ) : f.length === 0 ? 'nothing tried here yet' : 'nothing beats silence here yet'}
-      </div>
-    </button>
+    <td className="border-b border-[var(--border)] p-0">
+      <button onClick={() => onPick(st, sec)}
+        title={`${st === 'all' ? 'Every state' : STATE_LABEL[st]} · ${
+          sec === 'all' ? 'every outcome' : SECTION_LONG[sec]
+        } — ${n} ${n === 1 ? 'window' : 'windows'}`}
+        className={`tnum block w-full px-2 py-1.5 text-right text-body transition-colors ${bg}`}
+        style={{
+          color: here ? 'var(--kick-green)'
+            : n === 0 ? 'var(--text-muted)'
+              : strong ? 'var(--text-primary)' : 'var(--text-secondary)',
+          fontWeight: here || strong ? 600 : 400,
+        }}>
+        {n}
+      </button>
+    </td>
+  );
+}
+
+/**
+ * The session as a pivot: chat state down, outcome across, windows counted.
+ *
+ * It is the summary and the filter at once. That is not a shortcut — a count you can see but
+ * not open is a number you then have to go and find by hand, and a filter with no count on
+ * it is a control you have to click to learn whether it was worth clicking.
+ */
+function Pivot({ results, at, onPick }: {
+  results: Row[];
+  at: { state: StateKey; section: Section | 'all' };
+  onPick: (state: StateKey, section: Section | 'all') => void;
+}) {
+  return (
+    // `table-fixed`, so a long finding in BEST TACTIC truncates inside its column instead of
+    // shoving the count columns out of alignment — it is the only cell here whose width is
+    // not knowable in advance, and the only one it is safe to cut.
+    <div className="overflow-x-auto rounded-sm border border-[var(--border)] bg-[var(--bg-base)]">
+      <table className="w-full table-fixed border-separate border-spacing-0">
+        <thead>
+          <tr>
+            {/* Wide enough for EVERYTHING at body size with the row labels' tracking on it —
+                the totals row is the one label here that is a word rather than a state. */}
+            <th className={`${CELL} ${HEAD} w-[144px] whitespace-nowrap text-left text-[var(--text-muted)]`}>
+              CHAT STATE
+            </th>
+            <th className="w-[86px] border-b border-[var(--border)] p-0">
+              <button onClick={() => onPick(at.state, 'all')}
+                title="Every outcome, including the windows that never fired"
+                className={`${HEAD} block w-full whitespace-nowrap px-2 py-1.5 text-right transition-colors hover:bg-[var(--bg-elevated)]`}
+                style={{ color: at.section === 'all' ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                WINDOWS
+              </button>
+            </th>
+            {SECTIONS.map((c) => (
+              <th key={c.key} className="w-[100px] border-b border-[var(--border)] p-0">
+                <button onClick={() => onPick(at.state, c.key)} title={c.note}
+                  className={`${HEAD} block w-full whitespace-nowrap px-2 py-1.5 text-right transition-colors hover:bg-[var(--bg-elevated)]`}
+                  style={{
+                    color: c.color,
+                    opacity: at.section === 'all' || at.section === c.key ? 1 : 0.5,
+                  }}>
+                  {c.head}
+                </button>
+              </th>
+            ))}
+            <th className={`${CELL} ${HEAD} w-[92px] whitespace-nowrap text-right text-[var(--text-muted)]`}
+              title="Every fired window in this state, summed — in participation points">
+              NET LIFT
+            </th>
+            <th className={`${CELL} ${HEAD} hidden whitespace-nowrap text-left text-[var(--text-muted)] xl:table-cell`}
+              title={`The highest measured average in this state, over at least ${MIN_TRIES} tries`}>
+              BEST TACTIC
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {(['all', ...STATES] as StateKey[]).map((st) => {
+            const set = st === 'all' ? results : results.filter((r) => r.state === st);
+            const fired = set.filter((r) => r.outcome === 'fired');
+            const lift = fired.reduce((a, r) => a + r.engagement_delta, 0);
+            const best = st === 'all' ? undefined : bestTactic(results, st);
+            return (
+              <tr key={st}>
+                <th scope="row" className="border-b border-[var(--border)] p-0 text-left">
+                  <button onClick={() => onPick(st, at.section)}
+                    title={st === 'all' ? 'Every state'
+                      : `Only windows that closed while ${STATE_PHRASE[st]}`}
+                    className={`block w-full truncate px-2 py-1.5 text-left text-body font-bold tracking-[0.14em] transition-colors ${
+                      at.state === st
+                        ? 'bg-[var(--bg-surface)] hover:bg-[var(--bg-elevated)]'
+                        : 'hover:bg-[var(--bg-elevated)]'
+                    }`}
+                    style={{ color: at.state === st ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
+                    {st === 'all' ? 'EVERYTHING' : STATE_LABEL[st]}
+                  </button>
+                </th>
+                <Cell st={st} sec="all" n={set.length} at={at} onPick={onPick} strong />
+                {SECTIONS.map((c) => (
+                  <Cell key={c.key} st={st} sec={c.key} at={at} onPick={onPick}
+                    n={set.filter((r) => sectionOf(r) === c.key).length} />
+                ))}
+                <td className={`${CELL} tnum text-right text-body font-bold`}
+                  style={{ color: liftTint(lift) }}>
+                  {points(lift)}
+                </td>
+                <td className={`${CELL} hidden truncate text-left text-body xl:table-cell`}>
+                  {st === 'all' ? (
+                    // Not a gap in the data — a comparison this page refuses to make. A
+                    // spike out-chats a lull whatever fired in it, so a "best overall" would
+                    // be naming the busiest state, dressed up as a tactic.
+                    <span className="text-[var(--text-muted)]"
+                      title="Tactics are ranked only within a state — across them you would be ranking the states.">
+                      ranked per state only
+                    </span>
+                  ) : best ? (
+                    <span className="text-[var(--text-secondary)]">
+                      <span className="text-[var(--text-primary)]">{ARM_LABEL[best.arm]}</span>{' '}
+                      <span className="tnum">{points(best.mean)}</span> over {best.tries}
+                    </span>
+                  ) : (
+                    <span className="text-[var(--text-muted)]">
+                      {fired.length === 0 ? 'nothing tried here yet' : 'nothing beats silence here yet'}
+                    </span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+type SortKey = 'time' | 'state' | 'tactic' | 'verdict' | 'lift';
+/** Where each column starts when you first click it: newest and biggest first for the two
+ *  with an interesting end, A→Z for the ones without. */
+const SORT_DIR: Record<SortKey, 1 | -1> = {
+  time: -1, state: 1, tactic: 1, verdict: 1, lift: -1,
+};
+
+function compare(a: Row, b: Row, key: SortKey): number {
+  switch (key) {
+    case 'time': return a.tick - b.tick;
+    case 'state': return STATES.indexOf(a.state) - STATES.indexOf(b.state);
+    case 'tactic': return ARM_LABEL[a.arm].localeCompare(ARM_LABEL[b.arm]);
+    case 'verdict':
+      return SECTION_ORDER.indexOf(sectionOf(a)) - SECTION_ORDER.indexOf(sectionOf(b));
+    case 'lift': return a.engagement_delta - b.engagement_delta;
+  }
+}
+
+/** A sortable ledger heading. The arrow appears only on the column actually in use — three
+ *  greyed-out arrows on a header row is a header row of arrows. */
+function Th({ k, label, sort, onSort, width, right, title }: {
+  k: SortKey;
+  label: string;
+  sort: { key: SortKey; dir: 1 | -1 };
+  onSort: (k: SortKey) => void;
+  width: string;
+  right?: boolean;
+  title?: string;
+}) {
+  const on = sort.key === k;
+  return (
+    <th className={`${width} ${STICKY} border-b border-[var(--border)] p-0 font-normal`}>
+      <button onClick={() => onSort(k)}
+        title={title ? `${title}. Click to sort.` : `Sort by ${label.toLowerCase()}`}
+        className={`${HEAD} flex w-full items-center gap-1 px-2 py-1.5 transition-colors hover:text-[var(--text-primary)] ${
+          right ? 'justify-end' : ''
+        }`}
+        style={{ color: on ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+        {label}
+        <span className="w-2 shrink-0 text-left">{on ? (sort.dir === 1 ? '↑' : '↓') : ''}</span>
+      </button>
+    </th>
+  );
+}
+
+/** One window, and its detail when the streamer opens it. Two `<tr>`s: the detail spans the
+ *  full width, which it cannot do while sharing the row's column grid. */
+function Entry({ r, history, bandit, chat, open, onToggle }: {
+  r: Row;
+  history: History;
+  bandit: GambitState['bandit'];
+  chat: GambitState['chat'];
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const section = sectionOf(r);
+  const control = section === 'control';
+  const unsent = section === 'unsent';
+  const caveat = whyUnattributable(r);
+  const crowd = r.outcome === 'fired' && !r.contaminated
+    ? peopleShort(r.engagement_delta, history.viewers[r.tick])
+    : null;
+  const votes = Object.entries(r.votes).filter(([, n]) => n > 0);
+  // One column, several things it might have to say, in the order a reader needs them: why
+  // the number cannot be read, then how many people that lift actually is, then how chat
+  // answered. All three are progressive detail — the row is complete without any of them.
+  const note = caveat
+    ?? crowd
+    ?? (votes.length ? votes.map(([k, n]) => `${k} ${n}`).join(' · ') : null)
+    ?? (control ? 'control window' : null);
+  const at = history.elapsed[r.tick];
+  // Grey for the two piles that are not verdicts, and the same two greys the pivot's columns
+  // use — a never-sent window inherits "Can't tell" from `labelFor`, and printing it in that
+  // amber would say a measurement went wrong when in fact none was ever attempted.
+  const tint = control ? 'var(--text-muted)'
+    : unsent ? 'var(--text-secondary)'
+      : VERDICT_COLOR[labelFor(r)];
+
+  return (
+    <>
+      {/* `data-row` so a click on the chart's pin can find this row and scroll to it. */}
+      <tr data-row={r.action_id} onClick={onToggle}
+        className={`cursor-pointer transition-colors hover:bg-[var(--bg-elevated)] ${
+          open ? 'bg-[var(--bg-elevated)]' : ''
+        }`}>
+        <td className="border-b border-[var(--border)] p-0 align-middle">
+          <button onClick={(e) => { e.stopPropagation(); onToggle(); }}
+            aria-expanded={open} aria-label={open ? 'Close this window' : 'Open this window'}
+            className="flex w-7 items-center justify-center py-1.5 text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+            <ChevronRight size={13}
+              style={{ transform: open ? 'rotate(90deg)' : undefined, transition: 'transform .15s' }} />
+          </button>
+        </td>
+        <td className={`${CELL} tnum truncate text-body text-[var(--text-muted)]`}>
+          {at != null ? clock(at) : '—'}
+        </td>
+        <td className={`${CELL} truncate text-label font-bold tracking-[0.12em] text-[var(--text-muted)]`}>
+          {STATE_LABEL[r.state]}
+        </td>
+        <td className={`${CELL} truncate text-body text-[var(--text-secondary)]`}>
+          {ARM_LABEL[r.arm]}
+        </td>
+        <td className={`${CELL} truncate text-body text-[var(--text-primary)]`}
+          title={r.action?.body ?? undefined}>
+          {r.action?.body ? `“${r.action.body}”` : (
+            <span className="text-[var(--text-muted)]">
+              {control ? 'chose not to intervene' : r.outcome.replace('_', ' ')}
+            </span>
+          )}
+        </td>
+        <td className={`${CELL} hidden truncate text-label lg:table-cell`} title={note ?? undefined}
+          style={{ color: caveat ? 'var(--warn)' : 'var(--text-muted)' }}>
+          {note}
+        </td>
+        <td className={`${CELL} truncate text-body`} style={{ color: tint }}>
+          {control ? 'Control' : unsent ? 'Not sent' : labelFor(r)}
+        </td>
+        {/* A window that never fired gets no figure at all — printing +0.0 pts against it
+            invents a measurement that was never taken. */}
+        <td className={`${CELL} tnum pr-2.5 text-right text-body font-bold`} style={{ color: tint }}>
+          {unsent ? (
+            <span className="font-normal text-[var(--text-muted)]"
+              title="Nothing was sent, so nothing was measured.">
+              —
+            </span>
+          ) : points(r.engagement_delta)}
+        </td>
+      </tr>
+      {open && (
+        <tr>
+          <td colSpan={8} className="border-b border-[var(--border)] p-0">
+            <ResultDetail r={r} h={history} bandit={bandit} chat={chat} />
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
 export default function Review({ s }: { s: GambitState }) {
   const [tab, setTab] = useState<Tab>('actions');
-  const [filter, setFilter] = useState<Filter>('all');
-  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [state, setState] = useState<StateKey>('all');
+  const [section, setSection] = useState<Section | 'all'>('all');
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'time', dir: -1 });
   const [expanded, setExpanded] = useState<string | null>(null);
-  const isOpen = (k: string, dflt: boolean) => open[k] ?? dflt;
-  const toggle = (k: string, dflt: boolean) =>
-    setOpen((o) => ({ ...o, [k]: !(o[k] ?? dflt) }));
 
-  /** Which collapsible section a row lives under. Controls and never-sents get their own
-   *  piles rather than a verdict, so this cannot just be `labelFor`. */
-  const sectionOf = (r: Row): string =>
-    isControl(r) ? 'control' : isUnsent(r) ? 'unsent' : labelFor(r);
+  const onSort = (k: SortKey) =>
+    setSort((p) => ({ key: k, dir: p.key === k ? (p.dir === 1 ? -1 : 1) : SORT_DIR[k] }));
 
-  // Clicking a pin on the chart opens that window's row down here. Three things have to be
-  // true for it to actually be visible — the right tab, an unfiltered list, and its section
-  // open — and quietly doing two of the three is worse than doing none.
+  const clear = () => { setState('all'); setSection('all'); };
+
+  const pick = (st: StateKey, sec: Section | 'all') => {
+    // Clicking the cell you are already in is the way back out of it. Without that, the only
+    // route to "everything" is a corner you have to be told about.
+    if (st === state && sec === section) return clear();
+    setState(st);
+    setSection(sec);
+  };
+
+  // Clicking a pin on the chart opens that window's row down here. Two things have to be
+  // true for it to be visible — the right tab, and a filter that does not exclude it — and
+  // quietly doing one of the two is worse than doing neither.
   const select = (hit: { action_id: string }) => {
     const row = s.results.find((r) => r.action_id === hit.action_id);
     if (!row) return;
     setTab('actions');
-    setFilter('all');
-    setOpen((o) => ({ ...o, [sectionOf(row)]: true }));
+    clear();
     setExpanded(row.action_id);
   };
 
-  // Scroll it into view once the section it is in has actually rendered.
+  // Scroll it into view once the filter change that revealed it has actually rendered.
+  // Centred rather than `nearest`: the page is one long scroller with a pinned ledger
+  // header, and `nearest` is happy to park the row it just opened underneath it.
   useEffect(() => {
     if (!expanded) return;
     document.querySelector(`[data-row="${CSS.escape(expanded)}"]`)
-      ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      ?.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }, [expanded]);
 
   // The whole-session series a row's detail draws its window against.
@@ -350,31 +529,57 @@ export default function Review({ s }: { s: GambitState }) {
     elapsed: s.historyElapsedS,
   };
 
-  const rows: Row[] = s.results.filter((r) => filter === 'all' || r.state === filter);
-  const fired = rows.filter((r) => r.outcome === 'fired');
-  const totalLift = fired.reduce((a, r) => a + r.engagement_delta, 0);
+  const rows = s.results
+    .filter((r) => (state === 'all' || r.state === state)
+      && (section === 'all' || sectionOf(r) === section))
+    .sort((a, b) => {
+      // Unsent windows hold no measurement, so they sit at the bottom of a LIFT sort in
+      // either direction rather than posing as the session's biggest drop.
+      if (sort.key === 'lift') {
+        const gap = (isUnsent(a) ? 1 : 0) - (isUnsent(b) ? 1 : 0);
+        if (gap) return gap;
+      }
+      // Time breaks every tie, so equal lifts and repeated tactics still land in a stable,
+      // meaningful order instead of whatever the filter happened to produce.
+      return compare(a, b, sort.key) * sort.dir || a.tick - b.tick;
+    });
+
+  const allFired = s.results.filter((r) => r.outcome === 'fired');
+  const totalLift = allFired.reduce((a, r) => a + r.engagement_delta, 0);
+  const filtered = state !== 'all' || section !== 'all';
 
   // `tick` is the history array index a result closed under — history is never
   // truncated, so it lines up directly with viewerHistory/activeViewersHistory/actionsHistory.
-  const interventions = s.results
-    .filter((r) => r.outcome === 'fired')
-    .map((r) => ({ index: r.tick, result: r }));
+  const interventions = allFired.map((r) => ({ index: r.tick, result: r }));
 
   return (
-    // No height, background or padding of its own — the host owns those, so this
-    // renders correctly both as a full page and inside a panel.
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+    // No height, background, padding or scrolling of its own — the host owns all four, so
+    // this renders correctly both as a full page and inside a panel.
+    //
+    // Scrolling in particular. This used to pin everything above the ledger and scroll the
+    // ledger inside its own box, which put a short scrollbar in the middle of the screen and
+    // a second one on the page: the wheel did different things depending on where the pointer
+    // happened to be, and the rows you were reading had a viewport a third the height of the
+    // one you were looking at. One document, one scrollbar. The ledger's header is sticky, so
+    // the columns stay named however far down you go — which was the only thing the inner
+    // scroller was actually buying.
+    <div>
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-2">
-        <span className="tnum text-hero font-bold leading-none text-[var(--kick-green)]">
+        <span className="tnum text-hero font-bold leading-none" style={{ color: liftTint(totalLift) }}>
           {points(totalLift)}
         </span>
         <div className="min-w-0">
+          {/* The sentence follows the sign. A session that lost ground still gets one headline
+              figure — it just does not get to call it a gain. */}
           <div className="text-lead font-medium text-[var(--text-primary)]">
-            more of the audience talking
+            {totalLift > NOISE_BAND ? 'more of the audience talking'
+              : totalLift < -NOISE_BAND ? 'less of the audience talking'
+                : 'no change in how much of the audience talks'}
           </div>
+          {/* The viewer count used to hang off the end of this line. It is a live number and
+              this sentence is about the whole session, and it is in the strip below anyway. */}
           <div className="text-body text-[var(--text-muted)]">
-            {fired.length} interventions · summed matched-control lift, in participation points
-            {s.context?.viewer_count ? ` · ${s.context.viewer_count} viewers` : ''}
+            {allFired.length} interventions · summed matched-control lift, in participation points
           </div>
         </div>
         <div className="ml-auto flex gap-0.5 rounded-sm border border-[var(--border)] p-0.5">
@@ -391,20 +596,28 @@ export default function Review({ s }: { s: GambitState }) {
 
       <div className="mt-4 rounded-sm border border-[var(--border)] px-3 py-2">
         <InsightsGraph
-          // Two lines, each on its own scale.
+          // The same three metrics as the dashboard's Session Info strip, in the same order
+          // and the same colours, read from the same list — the legend prints their live
+          // values too, so the two surfaces open on the identical row of numbers.
           //
-          // `msgs_per_min` used to be a third, and it was the same curve as `unique_chatters`
-          // drawn twice — more people talking is more messages. Participation is the metric
-          // the whole system optimises, so that is the one that stays.
+          // Talking is the subject — it is what the bandit is scored on — so it is the only
+          // one drawn solid; Viewers and Activity are backdrops it moves against. Which of
+          // them share a y-scale is `metrics.ts`, and it is the whole reason equal numbers
+          // draw at equal heights.
           //
-          // Own scales because at 30 chatters in an audience of 650, sharing a scale with
-          // the viewer count pinned the primary metric flat along the bottom of the plot.
-          // Viewers is a dim backdrop, and its flatness is the point — participation moved,
-          // the room did not.
-          series={[
-            { data: s.viewerHistory, color: '#6aa9ff', label: 'Viewers', dim: true },
-            { data: s.activeViewersHistory, color: 'var(--kick-green)', label: 'Talking' },
-          ]}
+          // Activity is back after a spell as `msgs_per_min`, which was the same curve as
+          // Talking drawn twice. It is `actions_per_min` now, so it carries what Talking
+          // cannot: redemptions and gifted Kicks, chat doing something other than typing.
+          series={LIVE_METRICS.map((m) => ({
+            data: m.history(s),
+            color: m.color,
+            label: m.label,
+            value: m.value(s.context),
+            hint: m.blurb,
+            unit: m.unit,
+            scaleGroup: m.scaleGroup,
+            dim: m.dim,
+          }))}
           interventions={interventions}
           elapsedS={s.historyElapsedS}
           viewers={s.viewerHistory}
@@ -413,158 +626,104 @@ export default function Review({ s }: { s: GambitState }) {
       </div>
 
       {tab === 'tactics' ? (
-        <div className="mt-4 flex min-h-0 flex-1 flex-col"><PolicyMap s={s} /></div>
+        <div className="mt-4"><PolicyMap s={s} /></div>
       ) : s.results.length === 0 ? (
-        // Before the filter tiles, not under them: four tiles of +0.0 pts read as a broken
-        // dashboard, where the same emptiness explained reads as a system waiting to run.
-        <Empty
-          icon={<Radar size={18} />}
-          kicker="NO CLOSED WINDOWS YET"
-          title="The ledger fills itself"
-          blurb="Every decision opens a 60-second window and lands here when it closes — including the decisions to stay quiet, which are the control everything else is measured against."
-          steps={[
-            ['Watch', 'participation is sampled continuously and classified lull / steady / spike'],
-            ['Act, or deliberately not', 'a tactic fires, or the “nothing” tactic wins — either way a window opens'],
-            ['Measure against a matched control', 'the lift is against comparable quiet windows, never just before-and-after'],
-          ]}
-        />
+        // Before the pivot, not under it: a table of zeroes reads as a broken dashboard,
+        // where the same emptiness explained reads as a system waiting to run.
+        <Empty />
       ) : (
         <>
-          <div className="mt-4 flex gap-2">
-            <Tile k="all" label="EVERYTHING" set={s.results} all={s.results}
-              active={filter === 'all'} onSelect={setFilter} />
-            {STATES.map((st) => (
-              <Tile key={st} k={st} label={STATE_LABEL[st]}
-                set={s.results.filter((r) => r.state === st)} all={s.results}
-                active={filter === st} onSelect={setFilter} />
-            ))}
+          <div className="mt-4">
+            <Pivot results={s.results} at={{ state, section }} onPick={pick} />
           </div>
 
-          <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-            {/* Not "nothing has happened" — something has, the filter is just hiding it. */}
+          {/* What the ledger below is showing, and the way back out of it. When nothing is
+              filtered the same line is where the two tables' controls are explained, which
+              is the one place a reader is looking when they need that. */}
+          <div className="mt-2.5 flex items-baseline gap-3 text-body">
+            <span className="min-w-0 truncate text-[var(--text-muted)]">
+              {filtered ? (
+                <>
+                  Showing{' '}
+                  <span className="text-[var(--text-primary)]">
+                    {state === 'all' ? 'every state' : STATE_LABEL[state]}
+                  </span>
+                  {' · '}
+                  <span className="text-[var(--text-primary)]">
+                    {section === 'all' ? 'every outcome' : SECTION_LONG[section]}
+                  </span>
+                  {' — '}
+                  <span className="tnum">{rows.length}</span>{' '}
+                  {rows.length === 1 ? 'window' : 'windows'}
+                </>
+              ) : (
+                'Every closed window, newest first. Click a count above to narrow it, a heading below to sort it, a row to open it.'
+              )}
+            </span>
+            {filtered && (
+              <button onClick={clear}
+                className="ml-auto shrink-0 text-[var(--kick-green)] hover:underline">
+                show everything
+              </button>
+            )}
+          </div>
+
+          <div className="mt-1.5 rounded-sm border border-[var(--border)] bg-[var(--bg-base)]">
+            <table className="w-full table-fixed border-separate border-spacing-0">
+              {/* Pinned to the page's scroller, cell by cell — see `STICKY`. A header that
+                  lets three hundred rows slide under it is a header nobody can read past the
+                  first screenful, and the whole argument for a table over cards is that the
+                  columns stay named however far down the session you are. */}
+              <thead>
+                <tr>
+                  <th className={`w-7 ${STICKY} border-b border-[var(--border)] p-0`}>
+                    <span className="sr-only">Open</span>
+                  </th>
+                  <Th k="time" label="TIME" sort={sort} onSort={onSort} width="w-[84px]"
+                    title="When the measurement window closed, on the session clock" />
+                  <Th k="state" label="STATE" sort={sort} onSort={onSort} width="w-[78px]"
+                    title="What chat was doing when the window opened" />
+                  <Th k="tactic" label="TACTIC" sort={sort} onSort={onSort} width="w-[116px]" />
+                  {/* The two elastic columns, in proportion rather than "one takes the rest".
+                      Sized off the table instead of in pixels because they are the two whose
+                      content has no natural width — and a line column given all the slack
+                      leaves a hand's width of nothing between a short line and its note. */}
+                  <th className={`${CELL} ${HEAD} ${STICKY} w-[44%] text-left text-[var(--text-muted)]`}>
+                    WHAT IT SAID
+                  </th>
+                  <th className={`${CELL} ${HEAD} ${STICKY} hidden w-[20%] text-left text-[var(--text-muted)] lg:table-cell`}
+                    title="How many people that lift is, how chat answered, or why the number cannot be read">
+                    NOTE
+                  </th>
+                  <Th k="verdict" label="VERDICT" sort={sort} onSort={onSort} width="w-[100px]" />
+                  <Th k="lift" label="LIFT" sort={sort} onSort={onSort} width="w-[96px]" right
+                    title="Matched-control lift, in participation points" />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <Entry key={r.action_id + i} r={r}
+                    history={history} bandit={s.bandit} chat={s.chat}
+                    open={expanded === r.action_id}
+                    onToggle={() => setExpanded(expanded === r.action_id ? null : r.action_id)} />
+                ))}
+              </tbody>
+            </table>
+
+            {/* Not "nothing has happened" — something has, this cell is just empty. Which
+                cell is already named in the caption directly above, so saying it again here
+                would be the third place on screen printing the same filter. */}
             {rows.length === 0 && (
-              <p className="text-body text-[var(--text-muted)]">
-                Nothing has closed in a {filter} yet. Pick another state, or{' '}
-                <button onClick={() => setFilter('all')}
-                  className="text-[var(--kick-green)] hover:underline">
-                  show every state
+              <p className="px-3 py-8 text-center text-body text-[var(--text-muted)]">
+                Nothing has closed here yet. Pick another cell, or{' '}
+                <button onClick={clear} className="text-[var(--kick-green)] hover:underline">
+                  show everything
                 </button>.
               </p>
             )}
-            {GROUPS.map(({ verdict, blurb, start = false }) => {
-              const group = rows
-                .filter((r) => !isControl(r) && !isUnsent(r) && labelFor(r) === verdict)
-                .sort((a, b) => b.engagement_delta - a.engagement_delta);
-              if (!group.length) return null;
-              const total = group.reduce((a, r) => a + r.engagement_delta, 0);
-              return (
-                <Group key={verdict}
-                  dot={<span className="h-2 w-2 shrink-0 self-center rounded-sm"
-                    style={{ background: VERDICT_COLOR[verdict] }} />}
-                  title={verdict.toUpperCase()}
-                  color={VERDICT_COLOR[verdict]}
-                  count={group.length}
-                  // Collapsed, the header is the only thing left saying what is in here.
-                  note={verdict === "Can't tell" ? reasonBreakdown(group) : blurb}
-                  // Only where a sum means something: an unattributable group's total is a
-                  // number nobody should be adding up.
-                  trailing={verdict === 'Worked' || verdict === 'Backfired'
-                    ? points(total) : undefined}
-                  open={isOpen(verdict, start)}
-                  onToggle={() => toggle(verdict, start)}
-                >
-                  {/* The verdict as a left edge. Collapsed or open, from the back of a
-                      room, the ledger reads as bands of colour before it reads as text. */}
-                  <div className="overflow-hidden rounded-sm border border-[var(--border)]"
-                    style={{ borderLeft: `3px solid ${VERDICT_COLOR[verdict]}` }}>
-                    {group.map((r, i) => (
-                      <Entry key={r.action_id + i} r={r} first={!i} showState={filter === 'all'}
-                        history={history} bandit={s.bandit} chat={s.chat}
-                        open={expanded === r.action_id}
-                        onToggle={() => setExpanded(expanded === r.action_id ? null : r.action_id)} />
-                    ))}
-                  </div>
-                </Group>
-              );
-            })}
-
-            {/* Suggestions that never reached chat. Their own group, not a verdict: an
-                expired card carries no information about the tactic at all, and letting a
-                pile of them sit under CAN'T TELL buries the windows that were genuinely
-                measured-but-unattributable — which are a real and different problem. */}
-            {(() => {
-              const unsent = rows.filter((r) => !isControl(r) && isUnsent(r));
-              if (!unsent.length) return null;
-              const expired = unsent.filter((r) => r.outcome === 'dismissed').length;
-              return (
-                <Group
-                  dot={<span className="h-2 w-2 shrink-0 self-center rounded-sm border border-[var(--text-muted)]" />}
-                  title="NEVER SENT"
-                  color="var(--text-secondary)"
-                  count={unsent.length}
-                  note={expired === unsent.length
-                    ? 'you skipped these, or they expired waiting — nothing went to chat'
-                    : `${expired} skipped or expired · ${unsent.length - expired} failed to send`}
-                  open={isOpen('unsent', false)}
-                  onToggle={() => toggle('unsent', false)}
-                >
-                  <div className="overflow-hidden rounded-sm border border-dashed border-[var(--border)]">
-                    {unsent.map((r, i) => (
-                      <Entry key={r.action_id + i} r={r} first={!i} showState={filter === 'all'}
-                        history={history} bandit={s.bandit} chat={s.chat}
-                        open={expanded === r.action_id}
-                        onToggle={() => setExpanded(expanded === r.action_id ? null : r.action_id)} />
-                    ))}
-                  </div>
-                </Group>
-              );
-            })()}
-
-            {/* THE CONTROL — quiet windows, scored the same way, no fire cost */}
-            {(() => {
-              const ctrl = rows.filter(isControl);
-              if (!ctrl.length) return null;
-              const drift = ctrl.reduce((a, r) => a + r.engagement_delta, 0) / ctrl.length;
-              return (
-                <Group
-                  dot={<span className="h-2 w-2 shrink-0 self-center rounded-sm border border-[var(--text-muted)]" />}
-                  title="STAYED QUIET"
-                  color="var(--text-muted)"
-                  count={ctrl.length}
-                  note={`the control every intervention is measured against · chat drifts ${points(drift)} on its own`}
-                  open={isOpen('control', false)}
-                  onToggle={() => toggle('control', false)}
-                >
-                  <div className="overflow-hidden rounded-sm border border-dashed border-[var(--border)]">
-                    {ctrl.slice(0, 12).map((r, i) => (
-                      <div key={r.action_id + i}
-                        className="flex items-center gap-3 bg-[var(--bg-surface)] px-3 py-2.5 opacity-70"
-                        style={{ borderTop: i ? '1px solid var(--border)' : undefined }}>
-                        <span className="w-14 shrink-0 text-label font-bold tracking-[0.12em] text-[var(--text-muted)]">
-                          {STATE_LABEL[r.state]}
-                        </span>
-                        <p className="min-w-0 flex-1 truncate text-body italic text-[var(--text-muted)]">
-                          chose not to intervene
-                        </p>
-                        <span className="tnum w-[86px] shrink-0 text-right text-lead text-[var(--text-secondary)]">
-                          {points(r.engagement_delta)}
-                        </span>
-                      </div>
-                    ))}
-                    {ctrl.length > 12 && (
-                      <p className="bg-[var(--bg-surface)] px-3 py-2 text-body text-[var(--text-muted)]">
-                        + {ctrl.length - 12} more quiet windows
-                      </p>
-                    )}
-                  </div>
-                </Group>
-              );
-            })()}
           </div>
         </>
       )}
     </div>
   );
 }
-
-export { pct };

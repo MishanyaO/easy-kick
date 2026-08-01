@@ -1,13 +1,17 @@
 import random
 
+import pytest
+
 from easy_kick.bandit import (
     DECAY,
+    MAX_NOTHING_PROBABILITY,
     MIN_NOTHING_PROBABILITY,
     MIN_PULLS,
     PRIOR,
     Bandit,
     ReactivePolicy,
     TimerPolicy,
+    control_floor,
 )
 from easy_kick.models import Arm, ChatState
 
@@ -90,7 +94,9 @@ def test_nothing_keeps_an_explicit_minimum_allocation():
     bandit = Bandit(seed=0)
     eligible = (Arm.NOTHING, Arm.CHAT_POLL)
 
-    propensity = bandit._propensity(ChatState.STEADY, Arm.NOTHING, eligible)
+    propensity = bandit._propensity(
+        ChatState.STEADY, Arm.NOTHING, eligible, MIN_NOTHING_PROBABILITY
+    )
 
     assert propensity >= MIN_NOTHING_PROBABILITY
 
@@ -121,3 +127,44 @@ def test_the_timer_baseline_fires_on_a_cadence_and_learns_nothing():
     assert arms.count(Arm.EMOTE_RALLY) == 3
     timer.update(ChatState.STEADY, Arm.EMOTE_RALLY, 1.0)
     assert timer.select(ChatState.STEADY).arm is Arm.NOTHING  # 10th decision, unchanged
+
+
+def test_an_empty_control_pool_buys_far_more_silence_than_a_full_one():
+    """A quiet window is the only thing that ever becomes a control, and a state with none
+    can attribute nothing — so firing there teaches the posterior nothing at all."""
+    assert control_floor(1.0) == pytest.approx(MAX_NOTHING_PROBABILITY)
+    assert control_floor(0.0) == pytest.approx(MIN_NOTHING_PROBABILITY)
+    assert control_floor(0.5) > MIN_NOTHING_PROBABILITY
+    # Out-of-range deficits must not produce a probability outside [0, 1].
+    assert control_floor(2.0) == pytest.approx(MAX_NOTHING_PROBABILITY)
+    assert control_floor(-1.0) == pytest.approx(MIN_NOTHING_PROBABILITY)
+
+
+def test_a_raised_floor_actually_forces_more_controls():
+    eligible = (Arm.NOTHING, Arm.CHAT_POLL)
+    quiet = sum(
+        Bandit(seed=s).select(ChatState.STEADY, eligible, nothing_floor=0.9).arm
+        is Arm.NOTHING
+        for s in range(80)
+    )
+    normal = sum(
+        Bandit(seed=s).select(ChatState.STEADY, eligible, nothing_floor=0.0).arm
+        is Arm.NOTHING
+        for s in range(80)
+    )
+
+    assert quiet > normal
+
+
+def test_the_logged_propensity_describes_the_floor_that_actually_ran():
+    """A propensity that describes a different policy than the one that ran is worse than
+    logging none at all — off-policy evaluation reads this number literally."""
+    bandit = Bandit(seed=0)
+    eligible = (Arm.NOTHING, Arm.CHAT_POLL)
+
+    raised = bandit.select(ChatState.STEADY, eligible, nothing_floor=0.9)
+    assert raised.propensity >= 0.9 if raised.arm is Arm.NOTHING else True
+
+    decisions = [Bandit(seed=s).select(ChatState.STEADY, eligible, nothing_floor=0.9)
+                 for s in range(20)]
+    assert all(0.0 <= d.propensity <= 1.0 for d in decisions)

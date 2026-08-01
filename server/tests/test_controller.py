@@ -5,7 +5,11 @@ from easy_kick.context import StreamContext
 from easy_kick.controller import COOLDOWN_S, Controller
 from easy_kick.engagement import EngagementMonitor
 from easy_kick.models import BANDIT_ARMS, Arm, Autonomy, ChatState, EventEnvelope, EventType, Mode
-from easy_kick.reward import CONTAMINATION_S, WINDOW_S, RewardBook
+from easy_kick.reward import CONTAMINATION_S, WINDOW_S, RewardBook, window_for
+
+# Arms that ask a question get a longer window — chat has to read it and type an answer.
+POLL_S = window_for(Arm.CHAT_POLL)
+QUIZ_S = window_for(Arm.QUIZ)
 from easy_kick.store import EventStore
 
 
@@ -17,12 +21,15 @@ class SpyBandit:
     def __init__(self, arm: Arm = Arm.EMOTE_RALLY, raises: bool = False):
         self.arm, self.raises, self.updates = arm, raises, []
         self.last_eligible = None
+        self.last_nothing_floor = None
         self.cells = {(s, a): Posterior() for s in ChatState for a in BANDIT_ARMS}
 
-    def select(self, state: ChatState, eligible=BANDIT_ARMS) -> Decision:
+    def select(self, state: ChatState, eligible=BANDIT_ARMS,
+               nothing_floor: float | None = None) -> Decision:
         if self.raises:
             raise RuntimeError("degenerate posterior")
         self.last_eligible = tuple(eligible)
+        self.last_nothing_floor = nothing_floor
         arm = self.arm if self.arm in eligible else eligible[0]
         return Decision(state, arm, {}, 1.0, tuple(eligible))
 
@@ -121,9 +128,11 @@ def test_nothing_decisions_still_open_a_window_and_update_the_posterior():
     controller, bandit, _, _, frames, fires = build(arm=Arm.NOTHING)
 
     controller.tick(1000)
-    controller.tick(1000 + WINDOW_S)
+    # Quiet windows are aimed at whichever control pool is emptiest, so consecutive ones
+    # are not the same width. Close each on its own clock rather than on a fixed stride.
+    controller.tick(controller._window.closes_at)
     assert not bandit.updates  # the first quiet window establishes the control
-    controller.tick(1000 + 2 * WINDOW_S)
+    controller.tick(controller._window.closes_at)
 
     assert not fires
     assert [arm for _, arm, _ in bandit.updates] == [Arm.NOTHING]
@@ -205,12 +214,30 @@ def test_an_approved_card_starts_a_fresh_window_and_stays_observational():
     assert [arm for arm, _, _ in fires] == [Arm.CHAT_POLL]
     assert controller.approvals[Arm.CHAT_POLL] == 1
 
-    controller.tick(1000 + WINDOW_S)
-    assert not results(frames)  # approval at 1005 means the trial closes at 1065
-    controller.tick(1005 + WINDOW_S)
+    controller.tick(1000 + POLL_S)
+    assert not results(frames)  # approval at 1005 means the trial closes at 1005 + POLL_S
+    controller.tick(1005 + POLL_S)
     assert not bandit.updates  # streamer-approved timing is not randomized evidence
     assert results(frames)[0]["origin"] == "approved"
     assert results(frames)[0]["outcome"] == "fired"
+
+
+def test_prediction_is_selected_but_always_stops_for_approval():
+    controller, _, _, _, frames, fires = build(
+        arm=Arm.PREDICTION, autonomy=Autonomy.AUTO
+    )
+
+    controller.tick(1000)
+
+    action = next(p for t, p in frames if t == "controller.action")
+    assert action["kind"] is Arm.PREDICTION
+    assert action["autonomy"] is Autonomy.ASK
+    assert action["status"] == "suggested"
+    assert action["auto_fire"] is False
+    assert not fires
+
+    assert controller.approve(action["id"], 1005)
+    assert [arm for arm, _, _ in fires] == [Arm.PREDICTION]
 
 
 def test_an_unanswered_card_voids_its_window():
@@ -299,7 +326,7 @@ def test_a_poll_is_tallied_from_what_chat_actually_typed():
     controller.tick(1000)
     for i, vote in enumerate(["yes", "no", "yes", "yes", "banana"]):
         store.add(chat(f"voter{i}", 1010 + i, vote))
-    controller.tick(1000 + WINDOW_S)
+    controller.tick(1000 + POLL_S)
 
     assert results(frames)[0]["votes"] == {"yes": 3, "no": 1}
 
@@ -311,7 +338,7 @@ def test_one_viewer_gets_one_vote_however_many_times_they_type_it():
     for i in range(20):  # a single viewer trying to own the poll
         store.add(chat("spammer", 1010 + i, "yes"))
     store.add(chat("someone_else", 1040, "no"))
-    controller.tick(1000 + WINDOW_S)
+    controller.tick(1000 + POLL_S)
 
     assert results(frames)[0]["votes"] == {"yes": 1, "no": 1}
 
@@ -322,7 +349,7 @@ def test_a_repeat_voter_is_held_to_their_first_answer():
     controller.tick(1000)
     store.add(chat("undecided", 1010, "yes"))
     store.add(chat("undecided", 1020, "no"))
-    controller.tick(1000 + WINDOW_S)
+    controller.tick(1000 + POLL_S)
 
     assert results(frames)[0]["votes"] == {"yes": 1, "no": 0}
 
@@ -334,7 +361,7 @@ def test_votes_survive_the_punctuation_real_chat_types():
     for i, vote in enumerate(["!yes", "yes)", " yes ", "yes obviously", "no!"]):
         store.add(chat(f"voter{i}", 1010 + i, vote))
     store.add(chat("bystander", 1020, "is yes better than no?"))  # a question, not a ballot
-    controller.tick(1000 + WINDOW_S)
+    controller.tick(1000 + POLL_S)
 
     assert results(frames)[0]["votes"] == {"yes": 4, "no": 1}
 
@@ -349,7 +376,7 @@ def test_an_open_poll_publishes_its_running_tally_every_tick():
     polls = [p for t, p in frames if t == "controller.poll"]
     assert polls and polls[-1]["votes"] == {"yes": 1, "no": 0}
     assert polls[-1]["voters"] == 1
-    assert polls[-1]["closes_in_s"] == WINDOW_S - 10
+    assert polls[-1]["closes_in_s"] == POLL_S - 10
 
 
 def test_a_card_still_awaiting_approval_publishes_no_poll():
@@ -377,7 +404,7 @@ def test_quiz_answers_are_tallied_like_a_poll():
     controller.tick(1000)
     for i, vote in enumerate(["buff", "debuff", "buff"]):
         store.add(chat(f"voter{i}", 1010 + i, vote))
-    controller.tick(1000 + WINDOW_S)
+    controller.tick(1000 + QUIZ_S)
 
     assert results(frames)[0]["votes"] == {"buff": 2, "debuff": 1}
 
@@ -436,6 +463,16 @@ def test_manual_mode_with_no_rate_set_fires_nothing():
 
     for t in range(1000, 1400, 10):
         controller.tick(t)
+
+    assert not fires and not bandit.updates
+
+
+def test_manual_rates_cannot_schedule_prediction():
+    controller, bandit, _, _, _, fires = build(arm=Arm.PREDICTION)
+    controller.mode = Mode.MANUAL
+    controller.fire_rate = {Arm.PREDICTION: 1e6}
+
+    controller.tick(1000)
 
     assert not fires and not bandit.updates
 

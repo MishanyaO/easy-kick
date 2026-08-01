@@ -29,6 +29,7 @@ const RATE_LABEL: Record<string, string> = {
 // What each toggle-driven arm restores to when turned back on — its real backend default.
 const ON_VALUE: Partial<Record<Arm, Autonomy>> = {
   chat_digest: "auto",
+  prediction: "ask",
 }
 
 const SECTIONS: { heading: string; rows: Row[] }[] = [
@@ -45,7 +46,12 @@ const SECTIONS: { heading: string; rows: Row[] }[] = [
     heading: "Tactics",
     rows: [
       { label: "Chat digest", kind: "toggle", on: true, arm: "chat_digest" },
-      { label: "Prediction", muted: true },
+      {
+        label: "Prediction",
+        kind: "toggle",
+        value: "Approval required",
+        arm: "prediction",
+      },
     ],
   },
   {

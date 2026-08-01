@@ -33,8 +33,16 @@ export default function InsightsPage() {
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-hidden p-6">
-        <Review s={s} />
+      {/* The page's one scroller. The header stays put — it carries the gym controls and the
+          connection dot, which are about the run rather than about where you are in the
+          ledger — and everything below it scrolls as a single document.
+          The padding is on the inner box, not on the scroller: a scroller's own padding-top
+          is scrolled-through space that nothing clips, so with `p-6` out here the ledger's
+          pinned header sat 24px down and rows stayed visible in the gap above it. */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="p-6">
+          <Review s={s} />
+        </div>
       </div>
     </div>
   );

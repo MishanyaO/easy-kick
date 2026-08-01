@@ -1,7 +1,8 @@
 // A minimal inline-SVG chart with several series — by default each line fits its own
 // [0, max] range, so a viewer count and a small action count both read clearly on the
 // same axis without one flattening the other. Series sharing a `scaleGroup` instead
-// share one [0, max] range, so e.g. active viewers reads as a fraction of viewers.
+// share one [0, max] range, which is what makes two comparable series comparable: equal
+// values draw at equal heights, and the gap between the lines is a real quantity.
 export type Series = { data: number[]; color: string; scaleGroup?: string };
 
 export default function MultiSpark({

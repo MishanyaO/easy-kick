@@ -1,95 +1,48 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
+import type { ClickPoint } from '../types';
 
-/** A click in normalized [0,1] coordinates (so points stay correct across
- *  resizes of the preview) plus the wall-clock time it landed, in ms — the
- *  renderer fades a blob out over its age. */
-export type Point = { x: number; y: number; born: number };
+export type Point = ClickPoint;
 
-/** How long a click takes to fade from full intensity to gone, in ms. Also sets
- *  how long the map takes to build to steady state, so it's long enough that the
- *  hotspot ramps up gradually — like a room slowly noticing something — rather
- *  than snapping to full. The renderer scales each blob by its remaining life;
- *  here we drop points once they're fully faded so the array stays small. */
-export const FADE_MS = 12000;
-
-/** Hard safety cap on live points. With the fade above and the mock click rate
- *  the steady state is a few dozen, so this is only a runaway guard. */
-const MAX_POINTS = 4000;
-
-/** How many mock clicks arrive per tick, and how often. Kept to a slow trickle
- *  (~1–2 clicks/sec) so it reads like real viewers reacting, not a burst. */
-const CLICKS_PER_TICK = 1;
-const TICK_MS = 700;
-
-/** The hot spot the mock audience keeps clicking — 22.5% across, 30% down. Most
- *  clicks land here so it builds into an obvious warm core. */
-const PRIMARY = { x: 0.225, y: 0.3 };
-/** Fraction of mock clicks that land near PRIMARY; the rest are scattered
- *  random clicks across the frame. */
-const PRIMARY_FRACTION = 0.7;
-/** Spread of a clustered click around PRIMARY (std-dev-ish, normalized units). */
-const CLUSTER_SPREAD = 0.05;
+/** Hard cap on the streamer's own clicks. They are a garnish on a stream of thousands —
+ *  this only stops a held-down mouse from growing the array without bound. */
+const MAX_LOCAL = 200;
 
 const clamp01 = (n: number) => (n < 0 ? 0 : n > 1 ? 1 : n);
 
 /**
- * Owns the click-density data for the Stream Preview heatmap.
+ * The points the Stream Preview heatmap draws.
  *
- * While `active`, a timer emits mock clicks: most cluster tightly around a fixed
- * hot spot (`PRIMARY`), the rest are scattered random clicks, so a clear warm
- * core forms where the audience keeps clicking. Each click carries a birth time
- * and fades out over `FADE_MS`; fully faded points are pruned here so the map
- * breathes instead of accumulating forever. The map resets whenever `active`
- * goes false→true — i.e. a fresh stream run starts. `addClick` lets a real click
- * on the preview contribute a point too.
+ * The audience's taps are not invented here: they arrive over SSE from the running
+ * scenario, which models them the same way it models chat — off the same clock, off the
+ * same beats, and surging when the bot fires a click rally. This hook only merges in the
+ * streamer's own clicks on the preview, so a click on the video contributes a point like
+ * anyone else's.
+ *
+ * `serverPoints` is already bounded and ordered oldest-first by `useGambit`; local clicks
+ * are appended after it, which is where the renderer's newest-is-hottest ordering wants
+ * them.
  */
-export function useClickHeatmap(active: boolean): {
+export function useClickHeatmap(serverPoints: Point[]): {
   points: Point[];
   addClick: (nx: number, ny: number) => void;
 } {
-  const [points, setPoints] = useState<Point[]>([]);
+  const [local, setLocal] = useState<Point[]>([]);
+  // Merge lazily and cache: the server stream re-renders this component many times a
+  // second, and rebuilding a 600-point array on every one of them is the whole cost.
+  const merged = useRef<{ server: Point[]; local: Point[]; points: Point[] }>({
+    server: [], local: [], points: [],
+  });
 
-  const addClick = (nx: number, ny: number) =>
-    setPoints((prev) =>
-      prev.length >= MAX_POINTS
-        ? prev
-        : [...prev, { x: clamp01(nx), y: clamp01(ny), born: Date.now() }],
-    );
+  const addClick = useCallback((nx: number, ny: number) => {
+    setLocal((prev) => {
+      const next = [...prev, { x: clamp01(nx), y: clamp01(ny), born: Date.now() }];
+      return next.length > MAX_LOCAL ? next.slice(next.length - MAX_LOCAL) : next;
+    });
+  }, []);
 
-  useEffect(() => {
-    if (!active) {
-      // Stream isn't live: clear the map so a restart never flashes stale points.
-      setPoints([]);
-      return;
-    }
+  if (merged.current.server !== serverPoints || merged.current.local !== local) {
+    merged.current = { server: serverPoints, local, points: [...serverPoints, ...local] };
+  }
 
-    // New run: clear the old map.
-    setPoints([]);
-
-    const id = setInterval(() => {
-      const now = Date.now();
-
-      const batch: Point[] = [];
-      for (let i = 0; i < CLICKS_PER_TICK; i++) {
-        if (Math.random() < PRIMARY_FRACTION) {
-          batch.push({
-            x: clamp01(PRIMARY.x + (Math.random() - 0.5) * 2 * CLUSTER_SPREAD),
-            y: clamp01(PRIMARY.y + (Math.random() - 0.5) * 2 * CLUSTER_SPREAD),
-            born: now,
-          });
-        } else {
-          batch.push({ x: Math.random(), y: Math.random(), born: now });
-        }
-      }
-
-      // Drop fully faded points, then append this tick's batch.
-      setPoints((prev) =>
-        [...prev.filter((p) => now - p.born < FADE_MS), ...batch].slice(0, MAX_POINTS),
-      );
-    }, TICK_MS);
-
-    return () => clearInterval(id);
-  }, [active]);
-
-  return { points, addClick };
+  return { points: merged.current.points, addClick };
 }

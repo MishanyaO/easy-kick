@@ -5,7 +5,7 @@ import httpx
 
 from easy_kick.config import Settings
 from easy_kick.main import create_app
-from easy_kick.models import BANDIT_ARMS, Arm, Autonomy, Mode
+from easy_kick.models import BANDIT_ARMS, Arm, Autonomy, ChatState, Mode
 
 
 def dev_client(**overrides):
@@ -49,7 +49,9 @@ async def test_the_scenario_runs_through_the_gym_controls():
     async with client:
         run_sheet = (await client.get("/dev/gym/scenario")).json()
         assert run_sheet["scenario"] == "ranked_run"
-        assert len(run_sheet["ground_truth"]) == 12  # three states × four tactics
+        # every chat state × every tactic that can be chosen — `nothing` has no truth to
+        # publish, since staying quiet is what the rest is measured against
+        assert len(run_sheet["ground_truth"]) == len(ChatState) * (len(BANDIT_ARMS) - 1)
 
         started = await client.post(
             "/dev/gym", params={"mode": "scenario", "speed": 100, "seed": 7}
@@ -205,7 +207,7 @@ async def test_the_policy_table_reports_what_has_been_learned():
         body = (await client.get("/controller/policy")).json()
 
     assert body["enabled"] is True
-    assert len(body["posteriors"]) == 15  # 5 arms × 3 states
+    assert len(body["posteriors"]) == len(BANDIT_ARMS) * len(ChatState)
     assert body["insights"] == []  # nothing learned yet, and we do not pretend otherwise
 
 

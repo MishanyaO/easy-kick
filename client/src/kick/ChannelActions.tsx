@@ -19,17 +19,21 @@ const OURS = 3
 
 // Manual fire-rate sliders live here instead of on/off toggles — in `manual` each arm
 // fires at the rate you set and the bandit never runs; in `auto` these are ignored.
-const RATE_ARMS: Arm[] = ["emote_rally", "chat_poll", "quiz"]
+const RATE_ARMS: Arm[] = ["emote_rally", "chat_poll", "quiz", "click_rally"]
 const RATE_LABEL: Record<string, string> = {
   emote_rally: "Emote rally",
   chat_poll: "Chat poll",
   quiz: "Quiz",
+  click_rally: "Click rally",
 }
 
 // What each toggle-driven arm restores to when turned back on — its real backend default.
 const ON_VALUE: Partial<Record<Arm, Autonomy>> = {
   chat_digest: "auto",
   prediction: "ask",
+  // Straight to `auto`, unlike the others: this one ships switched off, so turning it on
+  // *is* the streamer saying yes — asking them again with a card would be asking twice.
+  click_rally: "auto",
 }
 
 const SECTIONS: { heading: string; rows: Row[] }[] = [
@@ -46,6 +50,12 @@ const SECTIONS: { heading: string; rows: Row[] }[] = [
     heading: "Tactics",
     rows: [
       { label: "Chat digest", kind: "toggle", on: true, arm: "chat_digest" },
+      {
+        label: "Click rally",
+        kind: "toggle",
+        value: "Viewers tap the stream",
+        arm: "click_rally",
+      },
       {
         label: "Prediction",
         kind: "toggle",

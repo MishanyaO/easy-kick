@@ -5,9 +5,11 @@ numbers on the dashboard were measured from the chat rather than written down in
 from collections import Counter
 from functools import lru_cache
 
+import pytest
+
 from easy_kick.bandit import Bandit
 from easy_kick.context import StreamContext
-from easy_kick.controller import COOLDOWN_S
+from easy_kick.controller import COOLDOWN_S, TICK_S
 from easy_kick.engagement import BOT_NAME
 from easy_kick.hub import EventHub
 from easy_kick.models import (
@@ -17,10 +19,21 @@ from easy_kick.models import (
     Autonomy,
     ChatState,
     EventType,
+    TrialOrigin,
     parse_timestamp,
 )
 from easy_kick.reward import WINDOW_S
-from easy_kick.scenario import AUDIENCE, RUN_S, Scenario, catalogue
+from easy_kick.scenario import (
+    AUDIENCE,
+    TARGET,
+    RESPONSE_WINDOW_S,
+    RUN_S,
+    SHOWCASE_AT,
+    SHOWCASE_HOLD_S,
+    SHOWCASE_PATIENCE,
+    Scenario,
+    catalogue,
+)
 from easy_kick.store import EventStore
 
 EPOCH = 1_750_000_000.0
@@ -33,6 +46,29 @@ UNATTENDED_ARMS = tuple(
 )
 
 
+class ClickLog:
+    """Stands in for the hub the app hands the scenario, keeping the taps it publishes.
+
+    Clicks are the one thing the story sends that is neither a chat event nor part of the
+    replayable session record — they go straight out to live subscribers — so this is the
+    only place they can be observed at all.
+    """
+
+    def __init__(self):
+        self.frames: list[dict] = []
+
+    def publish(self, event) -> None:
+        if event.type == "controller.clicks":
+            self.frames.append({**event.payload, "at": event.epoch() - EPOCH})
+
+    @property
+    def points(self) -> list[list[float]]:
+        return [point for frame in self.frames for point in frame["points"]]
+
+    def between(self, start: float, end: float) -> list[list[float]]:
+        return [p for f in self.frames if start <= f["at"] < end for p in f["points"]]
+
+
 class Run:
     """One complete seeded session, played headless on its own clock."""
 
@@ -40,12 +76,19 @@ class Run:
         self.frames: list[tuple[str, dict]] = []
         self.store = EventStore(maxlen=4000)
         self.bandit = Bandit(seed=seed)
+        self.clicks = ClickLog()
         self.scenario = build(
-            seed, self.store, self.bandit, self.frames.append
+            seed, self.store, self.bandit, self.frames.append, hub=self.clicks
         )
         self.events = []
+        self.held_at: list[float] = []
         while not self.scenario.completed:
             self.events += self.scenario.step(self.scenario.next_due_in())
+            if self.scenario.hold:
+                # Stand in for the runner, which pauses on a hold and clears it. Here the
+                # session plays straight through, so the only record is where it asked.
+                self.held_at.append(self.scenario.t)
+                self.scenario.hold = False
 
     def frames_of(self, kind: str) -> list[dict]:
         return [payload for name, payload in self.frames if name == f"controller.{kind}"]
@@ -66,12 +109,12 @@ class Run:
         return [round(b[0] - a[0], 2) for a, b in zip(lines, lines[1:])]
 
 
-def build(seed: int, store=None, bandit=None, record=None) -> Scenario:
+def build(seed: int, store=None, bandit=None, record=None, hub=None) -> Scenario:
     """A scenario wired to the same collaborators the app gives it, ready at t=0."""
     return Scenario(
         seed=seed,
         store=store if store is not None else EventStore(maxlen=4000),
-        hub=EventHub(),
+        hub=hub if hub is not None else EventHub(),
         bandit=bandit if bandit is not None else Bandit(seed=seed),
         context=StreamContext(viewer_count=640, started_at=EPOCH, is_live=True),
         publish=(lambda kind, payload: record((kind, payload))) if record else
@@ -100,6 +143,7 @@ def test_a_seed_replays_the_show_exactly_and_a_new_seed_writes_a_different_one()
     first, again, other = Run(7), Run(7), run(11)
 
     assert first.transcript() == again.transcript()
+    assert first.clicks.points == again.clicks.points
     assert [r["engagement_delta"] for r in first.fired] == [
         r["engagement_delta"] for r in again.fired
     ]
@@ -223,6 +267,150 @@ def test_quiet_windows_are_the_control_every_intervention_is_read_against():
     )
 
 
+def test_the_video_is_empty_until_a_rally_asks_for_it():
+    session = run(7)
+    rallies = [
+        parse_timestamp(a["ts"]).timestamp() - EPOCH
+        for a in session.frames_of("action")
+        if a["kind"] is Arm.CLICK_RALLY
+        and a["id"] in {r["action_id"] for r in session.fired}
+    ]
+
+    assert rallies and session.clicks.frames
+    # Nobody taps a stream unprompted. Every point on the map is inside the window of a
+    # rally that was actually sent — so a map with anything on it is the arm's doing, and
+    # a run that never plays one shows the frame the streamer's viewers see.
+    assert all(
+        any(at <= frame["at"] < at + RESPONSE_WINDOW_S for at in rallies)
+        for frame in session.clicks.frames
+    )
+    assert not session.clicks.between(0.0, rallies[0])
+
+
+def test_the_room_taps_the_video_and_a_tap_is_never_counted_as_chat():
+    session = run(7)
+    points = session.clicks.points
+
+    assert len(points) > 500
+    assert all(0.0 <= x <= 1.0 and 0.0 <= y <= 1.0 for x, y in points)
+    # A tap is engagement, not a message. Letting one into the store would put it in the
+    # participation the reward is read off — measuring our own heatmap as if the room had
+    # started talking — so clicks reach live subscribers and nothing else.
+    assert not session.store.query(event_type="controller.clicks")
+    assert all(
+        event.type == EventType.CHAT_MESSAGE_SENT for event in session.store.iter_recent()
+    )
+    # Nor are they part of the session record a late-joining tab replays: a heatmap is
+    # "where the room is looking", and an hour of old attention repainted at once is not.
+    assert not session.frames_of("clicks")
+    # A map is only worth drawing because attention is uneven: most of the room lands on
+    # what it was pointed at, the rest tap wherever they like, because people do.
+    x, y = TARGET
+    near = sum(abs(px - x) < 0.1 and abs(py - y) < 0.1 for px, py in points)
+    assert 0.7 < near / len(points) < 0.95
+
+
+def test_a_click_rally_turns_the_map_into_a_point():
+    session = run(7)
+    rally = next(
+        a for a in session.frames_of("action")
+        if a["kind"] is Arm.CLICK_RALLY
+        and a["id"] in {r["action_id"] for r in session.fired}
+    )
+    sent = parse_timestamp(rally["ts"]).timestamp() - EPOCH
+
+    answered = session.clicks.between(sent, sent + RESPONSE_WINDOW_S)
+    # The response the demo is built on: asked to tap, the room taps, and it does so hard
+    # enough to fill a frame that was blank a second earlier.
+    assert not session.clicks.between(sent - RESPONSE_WINDOW_S, sent)
+    assert len(answered) > 200
+    # ...and it aims. Scattered taps smear across the frame; a rally lands on one spot,
+    # which is what makes the heatmap readable as an answer rather than as traffic.
+    x, y = TARGET
+    on_target = sum(
+        abs(px - x) < 0.05 and abs(py - y) < 0.05 for px, py in answered
+    ) / len(answered)
+    assert on_target > 0.65
+    # And it starts immediately, so the map is already filling while the line is on screen.
+    assert session.clicks.between(sent, sent + 5)
+
+
+def test_the_stream_stops_on_the_first_click_rally_and_nothing_runs_over_it():
+    session = run(7)
+    sent = [
+        (parse_timestamp(a["ts"]).timestamp() - EPOCH, a)
+        for a in session.frames_of("action")
+        if a["id"] in {r["action_id"] for r in session.fired}
+    ]
+    rally_at, _ = next((at, a) for at, a in sent if a["kind"] is Arm.CLICK_RALLY)
+
+    # One hold in the run, on the first rally that reached chat — whoever chose it. The
+    # policy playing one of its own accord is the same thing worth stopping on as the one
+    # the showcase asks for, and a run that let it pass carried on into a quiz while the
+    # map everybody was looking at was still red.
+    assert len(session.held_at) == 1
+    # It holds on the finished thing: the room has stopped tapping and the window has
+    # closed, so the feed's top row is the rally itself rather than whatever preceded it.
+    assert session.held_at[0] == pytest.approx(rally_at + SHOWCASE_HOLD_S, abs=TICK_S)
+    assert session.held_at[0] >= rally_at + RESPONSE_WINDOW_S
+    assert session.held_at[0] >= rally_at + WINDOW_S
+    # And nothing else is sent between the rally and the hold.
+    assert not [a for at, a in sent if rally_at < at <= session.held_at[0]]
+
+
+def test_the_showcase_asks_for_a_rally_when_the_policy_has_not_played_one():
+    session = run(7)
+    cued = [
+        r for r in session.fired
+        if r["arm"] is Arm.CLICK_RALLY and r["origin"] is TrialOrigin.MANUAL
+    ]
+
+    # Asked for at most once, and only because the run had not produced one by itself.
+    assert len(cued) <= 1
+    if not cued:
+        return
+    action = next(a for a in session.frames_of("action") if a["id"] == cued[0]["action_id"])
+    sent = parse_timestamp(action["ts"]).timestamp() - EPOCH
+    assert SHOWCASE_AT <= sent < SHOWCASE_AT + SHOWCASE_PATIENCE + 300
+    # It waits for a room worth asking, which is most of why it is worth watching — and
+    # gives up waiting after `SHOWCASE_PATIENCE`, because a beat nobody gets to see is
+    # worse than one played over a room that happens to be talking.
+    assert (
+        cued[0]["state"] is ChatState.LULL
+        or sent >= SHOWCASE_AT + SHOWCASE_PATIENCE
+    )
+    # ...and for a quiet window to read the result against, so the map does not land next
+    # to a row that says `can't tell`.
+    assert not cued[0]["contaminated"]
+    # Cueing is not teaching: a manual trial never updates a posterior, so the showcase
+    # cannot put its own answer into the table the policy is supposed to be learning.
+    assert cued[0]["origin"] is TrialOrigin.MANUAL
+
+
+def test_a_cued_arm_still_obeys_the_rails_it_would_have_obeyed_anyway():
+    frames: list[tuple[str, dict]] = []
+    bandit = Bandit(seed=7)
+    scenario = build(7, bandit=bandit, record=frames.append)
+    controller = scenario.controller
+    controller.autonomy = dict.fromkeys(controller.autonomy, Autonomy.AUTO)
+
+    assert controller.cue(Arm.CLICK_RALLY, scenario.now) is True
+    # Not twice: the window it just opened is the same rail that stops the policy from
+    # talking over its own measurement.
+    assert controller.cue(Arm.CLICK_RALLY, scenario.now) is False
+    # And an arm the streamer switched off stays off — a cue is a request, not an override.
+    controller.autonomy[Arm.CLICK_RALLY] = Autonomy.OFF
+    assert controller.cue(Arm.CLICK_RALLY, scenario.now) is False
+
+    scenario.step(WINDOW_S + TICK_S)
+    closed = next(payload for kind, payload in frames if kind == "controller.result")
+    assert closed["arm"] is Arm.CLICK_RALLY
+    # Cued, therefore not evidence: it is logged as the streamer's move and closing it
+    # leaves the posterior exactly where it was.
+    assert closed["origin"] is TrialOrigin.MANUAL
+    assert bandit.cells[closed["state"], Arm.CLICK_RALLY].pulls == 0
+
+
 def test_the_policy_finds_the_table_it_is_never_shown():
     # Six sessions, not three. A spike is a short beat and the bot is deliberately reluctant
     # to interrupt one, so spike windows are the scarcest evidence in any single run — and
@@ -257,6 +445,9 @@ def test_an_arm_left_on_ask_raises_a_card_instead_of_firing():
     scenario = build(7, record=frames.append)
     for arm in UNATTENDED_ARMS:
         scenario.controller.autonomy[arm] = Autonomy.ASK
+    # Off, so the showcase stays out of it: a cued arm is one the streamer asked for by
+    # name and is delivered without a card, which is not what this is about.
+    scenario.controller.autonomy[Arm.CLICK_RALLY] = Autonomy.OFF
 
     said: list[str] = []
     while not scenario.completed and not any(f["type"] == "action" for _, f in frames):

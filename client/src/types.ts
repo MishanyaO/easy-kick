@@ -2,7 +2,8 @@
 // spec). Where the spec and the wire disagree, the wire wins and the gap is commented.
 
 export type Arm =
-  | 'nothing' | 'emote_rally' | 'chat_poll' | 'quiz' | 'chat_digest' | 'prediction';
+  | 'nothing' | 'emote_rally' | 'chat_poll' | 'quiz' | 'chat_digest' | 'prediction'
+  | 'click_rally';
 export type ChatState = 'lull' | 'steady' | 'spike';
 export type Autonomy = 'auto' | 'ask' | 'off';
 /** Set before the stream starts. `manual`: fire-rate sliders decide, the bandit never runs.
@@ -144,6 +145,47 @@ export type ControllerResetFrame = {
   type: 'reset';
 };
 
+/** The backend stopped its own clock on a beat worth looking at (see the scenario's
+ *  showcase). It is an ordinary pause — Start resumes it — but the dashboard freezes the
+ *  click map on it, so what is being talked about does not fade out mid-sentence. */
+export type HoldFrame = {
+  type: 'hold';
+  reason: string;
+};
+
+/**
+ * Taps on the video, batched — the click map over Stream Preview is drawn from these.
+ *
+ * Ephemeral on purpose, and the one frame that is not part of the session record: clicks
+ * are never written to the event store (a tap is not a chat event and must not become one
+ * in the measurement) and never kept in the replayable controller history (a tab opened
+ * late would otherwise repaint an hour of somebody else's attention as if it were now).
+ * That also means no `seq` — which is why `useGambit` handles these alongside chat, ahead
+ * of its sequence gate.
+ */
+/** One tap, in normalized [0,1] frame coordinates, stamped on arrival: the map fades a
+ *  blob out by how long ago it landed, and the wire carries no clock we could use for
+ *  that — the stream runs on virtual time and can be sped up. */
+export type ClickPoint = { x: number; y: number; born: number };
+
+/** How long a tap takes to fade from full intensity to gone. The map is "where the room is
+ *  looking", not "where it has ever looked", so a point is only worth keeping while it is
+ *  still being drawn: short enough that the frame goes clean on its own once a rally is
+ *  over, long enough that a whole rally is still on screen when the run holds on it —
+ *  which at 50× — the speed the demo is actually run at — is under a second after the last
+ *  tap lands. Both ends of that matter now that a rally is the only thing that ever fills
+ *  the map: too long and the picture outstays the moment it belongs to, too short and it
+ *  has drained before the hold arrives to freeze it. Tuned for 50×; at 1× or 5× a rally
+ *  will visibly drain behind its own taps. */
+export const CLICK_FADE_MS = 1000;
+
+export type ClicksFrame = {
+  type: 'clicks';
+  ts: string;
+  /** Normalised `[x, y]` over the video frame, so they survive any resize of the panel. */
+  points: [number, number][];
+};
+
 export type ControllerFrame = (
   | ContextFrame
   | ActionFrame
@@ -151,6 +193,7 @@ export type ControllerFrame = (
   | BanditFrame
   | PollFrame
   | DigestFrame
+  | HoldFrame
   | ControllerResetFrame
 ) & {
   /** Monotonic within one backend-owned gym/live session. */
@@ -160,6 +203,7 @@ export type ControllerFrame = (
 
 export type Frame =
   | ChatFrame
+  | ClicksFrame
   | ControllerFrame;
 
 /** UI vocabulary derived from his numbers — the backend does not send these. */
@@ -217,6 +261,7 @@ export const ARM_LABEL: Record<Arm, string> = {
   quiz: 'Quiz',
   chat_digest: 'Chat digest',
   prediction: 'Prediction',
+  click_rally: 'Click rally',
 };
 
 /** What the tactic actually did in chat, for the expanded row. */
@@ -227,6 +272,7 @@ export const ARM_BLURB: Record<Arm, string> = {
   quiz: 'asked chat something with a right answer',
   chat_digest: 'summarised what chat was on about — for you, never posted',
   prediction: 'opened a call for chat to back a side',
+  click_rally: 'asked chat to tap the stream, and drew what they pointed at',
 };
 
 /** The chat state as a clause in a sentence, rather than a chip. */

@@ -52,6 +52,11 @@ DEFAULT_AUTONOMY = {
     Arm.CHAT_POLL: Autonomy.ASK,  # occupies chat's attention
     Arm.QUIZ: Autonomy.ASK,  # occupies chat's attention
     Arm.PREDICTION: Autonomy.ASK,  # stakes viewers' Channel Points. Not ours to spend
+    # Off until the streamer turns it on. Every other arm defaults to something it can do,
+    # because the point of the thing is that it works without being driven; this one asks
+    # viewers to touch the video, which is a different kind of ask, and it is the one
+    # tactic a streamer will want to introduce deliberately rather than discover running.
+    Arm.CLICK_RALLY: Autonomy.OFF,
     # Never posts to chat, so there's nothing for the streamer to approve.
     Arm.CHAT_DIGEST: Autonomy.AUTO,
 }
@@ -85,6 +90,7 @@ TEMPLATES = {
         "Quiz", "quick one: is that a buff or a debuff?", ["buff", "debuff"]
     ),
     Arm.PREDICTION: Card("Prediction", "/prediction Do they clutch it? | yes | no", []),
+    Arm.CLICK_RALLY: Card("Click rally", "tap the stream where you're looking", []),
     Arm.CHAT_DIGEST: Card(
         "Chat digest", "a question worth answering is getting buried", []
     ),
@@ -217,6 +223,46 @@ class Controller:
             logger.warning("bandit.select failed; skipping tick", exc_info=True)
             return
         self._act(decision, metrics, now)
+
+    def cue(self, arm: Arm, now: float) -> bool:
+        """Run one arm now, the way a streamer asking for it would. False if a rail said no.
+
+        Every rail still binds — the kill switch, an arm switched off, an open window, the
+        cooldown, the hourly cap, warmup — and `prediction` still stops for approval,
+        because that one stakes viewers' points. What a cue skips is the *choice* (the
+        bandit is not asked which arm to play) and the approval card, since the person the
+        card would ask is the person who just asked for it.
+
+        Which is exactly why the trial is logged as `manual`. A cued fire is not randomized
+        evidence — nothing decided it but the person who asked — so it never updates a
+        posterior. A demo whose showcase taught the policy its own answer would be a demo
+        of nothing.
+        """
+        if (
+            not self.enabled
+            or self._pending
+            or self._window
+            or self._railed(now)
+            or not self._ready(now)
+            or self._capped(arm, now)
+            or self.autonomy.get(arm, Autonomy.OFF) is Autonomy.OFF
+        ):
+            return False
+        metrics = self._monitor.measure(now)
+        decision = Decision(self._monitor.classify(metrics), arm, {}, 0.0, (arm,))
+        self._act(decision, metrics, now, origin=TrialOrigin.MANUAL, requested=True)
+        return True
+
+    def can_attribute(self, state: ChatState) -> bool:
+        """Whether a window opened in this state now could be read as an effect at all.
+
+        False while the control pool for the state is short: the close would report "no
+        comparable quiet window yet" and the row would say `can't tell` however well the
+        thing actually landed. Worth asking before *choosing* to spend a moment on
+        something — a demo especially, where an unattributable showcase is a showcase of
+        the caveat.
+        """
+        return self._rewards.control_deficit(state) < 1.0
 
     def approve(self, action_id: str, now: float) -> bool:
         """Begin delivery. The measured window starts only after delivery succeeds."""
@@ -374,6 +420,7 @@ class Controller:
         now: float,
         *,
         origin: TrialOrigin = TrialOrigin.AUTONOMOUS,
+        requested: bool = False,
     ) -> None:
         arm, state = decision.arm, decision.state
         window_id = uuid.uuid4().hex[:12]
@@ -381,8 +428,14 @@ class Controller:
         # Approval-only arms remain human-gated even if an internal caller constructs an
         # invalid autonomy map. The HTTP surface rejects that state too; this is the final
         # delivery-boundary guard before viewers' points can be put in play.
+        #
+        # `requested` means somebody asked for this arm by name. Raising a card to ask
+        # whether they meant it would be asking the same person the same question twice —
+        # so a cue delivers, and only the approval-only rail above still stops it.
         autonomy = (
-            Autonomy.ASK if arm in APPROVAL_ONLY_ARMS else self.autonomy[arm]
+            Autonomy.ASK if arm in APPROVAL_ONLY_ARMS
+            else Autonomy.AUTO if requested
+            else self.autonomy[arm]
         )
         # `nothing` has no card and says nothing, but it still opens a window. Otherwise its
         # posterior never updates and the arm can never win — which is the whole reason the

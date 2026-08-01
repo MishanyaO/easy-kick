@@ -39,7 +39,8 @@ async def test_login_redirects_to_kick(client, app):
     assert q["response_type"] == ["code"]
     assert q["client_id"] == ["test-client"]
     assert q["code_challenge_method"] == ["S256"]
-    assert "events:subscribe" in q["scope"][0]
+    scopes = set(q["scope"][0].split())
+    assert {"user:read", "events:subscribe", "channel:read", "chat:write"} <= scopes
     assert q["state"][0] in app.state.tokens.pending
 
 

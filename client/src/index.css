@@ -1,2 +1,32 @@
 @import "tailwindcss";
-@import "./snippets/theme/tokens.css";
+@import "./theme/tokens.css";
+
+/* ── The type scale ─────────────────────────────────────────────────
+   Six sizes, and nothing between them. The Insights surfaces used to
+   pick a number per element — 9, 10, 11, 12, 13, 15, 18 all on one row
+   — which reads as noise before it reads as hierarchy, and disappears
+   entirely on a projector.
+
+   Every size on those surfaces is one of these. `text-[13px]` and
+   friends are the smell: if a thing needs a size that is not here, the
+   scale is wrong, not the element.
+
+     label   12  eyebrows, chips, units, counts — the floor
+     body    14  ordinary text and secondary lines
+     lead    16  the line that gets read aloud; card headlines
+     stat    20  a per-row measurement
+     big     26  a summary figure on a tile
+     hero    32  the one number the page is about
+
+   The top of the scale is deliberately not enormous. A hero at 40 was
+   two and a half times the line beside it, which on a dashboard reads
+   as a stray element rather than as emphasis — and the same figure is
+   already repeated on the EVERYTHING tile below it.                  */
+@theme {
+  --text-label: 12px;
+  --text-body: 14px;
+  --text-lead: 16px;
+  --text-stat: 20px;
+  --text-big: 26px;
+  --text-hero: 32px;
+}

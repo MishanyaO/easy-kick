@@ -1,4 +1,7 @@
+from contextlib import suppress
+from datetime import datetime, timezone
 from enum import StrEnum
+from functools import lru_cache
 
 from pydantic import BaseModel
 
@@ -18,6 +21,86 @@ class EventType(StrEnum):
     KICKS_GIFTED = "kicks.gifted"
 
 
+class ChatState(StrEnum):
+    """How busy chat is relative to this channel's own rolling baseline."""
+
+    LULL = "lull"
+    STEADY = "steady"
+    SPIKE = "spike"
+
+
+class Arm(StrEnum):
+    """An intervention the controller can choose. `NOTHING` is a real arm and is scored."""
+
+    NOTHING = "nothing"
+    EMOTE_RALLY = "emote_rally"
+    CHAT_POLL = "chat_poll"
+    QUIZ = "quiz"
+    CHAT_DIGEST = "chat_digest"
+    PREDICTION = "prediction"
+    # Asks the room to tap the video itself. The only arm answerable without typing, which
+    # is why it converts the part of an audience that never speaks.
+    CLICK_RALLY = "click_rally"
+
+
+class Autonomy(StrEnum):
+    """How much rope the streamer gives one arm."""
+
+    AUTO = "auto"
+    ASK = "ask"
+    OFF = "off"
+
+
+class Mode(StrEnum):
+    """Set before the stream starts. `manual`: the streamer's fire-rate sliders decide, the
+    bandit is never consulted. `auto`: sliders are ignored, Thompson sampling runs freely."""
+
+    AUTO = "auto"
+    MANUAL = "manual"
+
+
+class TrialOrigin(StrEnum):
+    """How an action reached chat. Only autonomous trials are randomized evidence."""
+
+    AUTONOMOUS = "autonomous"
+    APPROVED = "approved"
+    MANUAL = "manual"
+
+
+# What Thompson sampling chooses between. Prediction is still a real experiment, but its
+# delivery always stops for streamer approval because it stakes viewers' Channel Points.
+# Chat digest is streamer-only and triggered by its own eligibility rule, so it is the one
+# controller move that does not belong in this choice set.
+BANDIT_ARMS = (
+    Arm.NOTHING,
+    Arm.EMOTE_RALLY,
+    Arm.CHAT_POLL,
+    Arm.QUIZ,
+    Arm.PREDICTION,
+    Arm.CLICK_RALLY,
+)
+
+# Safety policy, not something learning can promote away.
+APPROVAL_ONLY_ARMS = frozenset({Arm.PREDICTION})
+
+
+def parse_timestamp(timestamp: str) -> datetime | None:
+    """Kick sends either an epoch or ISO-8601. None if the value is neither."""
+    # OverflowError: an epoch far outside the range datetime can represent.
+    with suppress(ValueError, OverflowError):
+        return datetime.fromtimestamp(float(timestamp), tz=timezone.utc)
+    with suppress(ValueError):
+        return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    return None
+
+
+@lru_cache(maxsize=8192)
+def _epoch(timestamp: str) -> float | None:
+    # Cached: the engagement windows re-read the same events on every tick.
+    moment = parse_timestamp(timestamp)
+    return moment.timestamp() if moment else None
+
+
 class EventEnvelope(BaseModel):
     # keep very simple for now
     type: str
@@ -30,6 +113,10 @@ class EventEnvelope(BaseModel):
         node = self.payload.get(key)
         return node.get("username") if isinstance(node, dict) else None
 
+    def epoch(self) -> float | None:
+        """Envelope time as a unix timestamp; None if unparseable."""
+        return _epoch(self.timestamp)
+
 
 class ChatEventOut(BaseModel):
     """A chat message in the shape the dashboard's `ChatEvent` type expects."""
@@ -38,6 +125,9 @@ class ChatEventOut(BaseModel):
     id: str
     ts: str
     username: str
+    # The stable identity. `username` is display text and can be changed, so anything that
+    # counts people — unique chatters, one-vote-per-viewer — has to key on this.
+    user_id: str | None = None
     text: str
     emotes: list[str] = []
     is_sub: bool = False
@@ -49,10 +139,12 @@ class ChatEventOut(BaseModel):
         identity = sender.get("identity") or {}
         badges = {b.get("type") for b in identity.get("badges") or [] if isinstance(b, dict)}
         emotes = ev.payload.get("emotes") or []
+        user_id = sender.get("user_id")
         return cls(
             id=ev.payload.get("message_id") or ev.message_id,
             ts=ev.timestamp,
             username=sender.get("username") or "anonymous",
+            user_id=str(user_id) if user_id is not None else None,
             text=ev.payload.get("content") or "",
             emotes=[e.get("name", "") for e in emotes if isinstance(e, dict)],
             is_sub=bool(badges & {"subscriber", "founder"}),

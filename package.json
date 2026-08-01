@@ -2,14 +2,19 @@
   "name": "kick-insights",
   "private": true,
   "version": "0.1.0",
+  "packageManager": "pnpm@11.17.0+sha512.cca3cea332ad254bb84145f966d19f4879615210346fc92c79a047f23a0d7b3cca3c3792f0076ba1f1831d277efbcf0a9119b31a9a60eca7fb3d6231f331ef72",
+  "engines": {
+    "node": "24.x",
+    "pnpm": "^11.17.0"
+  },
   "scripts": {
-    "dev": "concurrently -n server,client -c blue,magenta \"npm:_server\" \"npm:_client\"",
-    "dev:simulator": "concurrently -n server,client -c yellow,magenta \"npm:_server:sim\" \"npm:_client:sim\"",
-    "_server": "cd server && uv run uvicorn easy_kick.main:app --port 8000 --reload",
-    "_server:sim": "cd server && KICK_SIMULATOR_ENABLED=true uv run uvicorn easy_kick.main:app --port 8000 --reload",
-    "_client": "cd client && npm run dev",
-    "_client:sim": "cd client && npm run dev -- --mode simulator",
-    "build": "cd client && npm run build",
+    "dev": "concurrently -n server,client -c yellow,magenta \"pnpm:_server:sim\" \"pnpm:_client:sim\"",
+    "dev:live": "concurrently -n server,client -c blue,magenta \"pnpm:_server\" \"pnpm:_client\"",
+    "_server": "cd server && exec uv run uvicorn easy_kick.main:app --port 8000 --reload",
+    "_server:sim": "cd server && KICK_SIMULATOR_ENABLED=true exec uv run uvicorn easy_kick.main:app --port 8000 --reload",
+    "_client": "cd client && pnpm dev",
+    "_client:sim": "cd client && pnpm dev --mode simulator",
+    "build": "cd client && pnpm build",
     "test": "cd server && uv run pytest -q"
   },
   "devDependencies": {

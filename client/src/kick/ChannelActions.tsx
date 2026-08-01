@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { ChevronRight, ExternalLink, Wrench } from "lucide-react"
 import Panel, { PanelButton } from "./Panel"
 import { controller } from "../useGambit"
-import type { Arm, Autonomy, Mode } from "../types"
+import { ARM_LABEL, ARM_XP, type Arm, type Autonomy, type Mode } from "../types"
 
 type Row = {
   label: string
@@ -13,6 +13,8 @@ type Row = {
   /** Real arm this toggle drives — turning it off sets autonomy to `off`; turning it
    *  back on restores whichever non-off value the arm actually defaults to. */
   arm?: Arm
+  /** Drives `rewards_enabled` — whether closed windows pay participation XP into chat. */
+  rewards?: boolean
 }
 
 const OURS = 3
@@ -55,12 +57,21 @@ const SECTIONS: { heading: string; rows: Row[] }[] = [
     ],
   },
   {
+    // Ours, and real. This section used to be Kick chrome inventing its own numbers
+    // ("XP for votes — 10 XP", "Quest drops"), which was harmless while nothing paid out
+    // XP and became a lie the moment something did: a streamer reading it would think
+    // those rows were the rates, sitting one panel away from the rates that actually are.
+    // The rate rows are read straight off `ARM_XP`, so they cannot drift from the server.
     heading: "Chat rewards",
     rows: [
-      { label: "XP for votes", kind: "chevron", value: "10 XP" },
-      { label: "XP for first message", kind: "chevron", value: "25 XP" },
-      { label: "Quest drops", kind: "toggle", on: true },
-      { label: "Level badges", kind: "chevron" },
+      { label: "Post rewards to chat", kind: "toggle", rewards: true },
+      ...(Object.keys(ARM_XP) as Arm[])
+        .sort((a, b) => (ARM_XP[a] ?? 0) - (ARM_XP[b] ?? 0))
+        .map((arm): Row => ({
+          label: ARM_LABEL[arm],
+          kind: "chevron",
+          value: `+${ARM_XP[arm]} XP`,
+        })),
     ],
   },
   {
@@ -105,14 +116,15 @@ function Toggle({ on }: { on: boolean }) {
 }
 
 /** Kick's channel settings list, for chrome only, plus our Gambit pre-set — "Suggestions",
- *  "Auto approve", the mode switch and per-arm rate sliders, and the "Chat digest" toggle
- *  actually drive the controller (`GET`/`PUT /controller/autonomy`). Everything below
- *  "Tactics" is inert Kick chrome; nothing there is ours to wire up. */
+ *  "Auto approve", the mode switch and per-arm rate sliders, the "Chat digest" toggle and
+ *  "Post rewards to chat" actually drive the controller (`GET`/`PUT /controller/autonomy`).
+ *  Everything below "Chat rewards" is inert Kick chrome; nothing there is ours to wire up. */
 export default function ChannelActions() {
   const [enabled, setEnabled] = useState(true)
   const [autonomy, setAutonomy] = useState<Partial<Record<Arm, Autonomy>>>({})
   const [mode, setMode] = useState<Mode>("auto")
   const [rates, setRates] = useState<Partial<Record<Arm, number>>>({})
+  const [rewards, setRewards] = useState(true)
 
   useEffect(() => {
     void controller
@@ -120,11 +132,21 @@ export default function ChannelActions() {
       .then((p) => {
         setEnabled(p.enabled)
         setAutonomy(p.autonomy)
+        setRewards(p.rewards_enabled ?? true)
         if (p.mode) setMode(p.mode)
         if (p.fire_rate) setRates((r) => ({ ...r, ...p.fire_rate }))
       })
       .catch(() => undefined)
   }, [])
+
+  // Same discipline as the rest of these: the server's answer sets the switch, so a
+  // rejected request leaves it showing what is actually true.
+  const toggleRewards = () => {
+    void controller
+      .setAutonomy({ rewards_enabled: !rewards })
+      .then((p) => setRewards(p.rewards_enabled))
+      .catch(() => undefined)
+  }
 
   // Set from the server's response, not optimistically — a rejected or CORS-blocked
   // request should leave the toggle showing what's actually true, not what we hoped.
@@ -172,6 +194,7 @@ export default function ChannelActions() {
   const isOn = (r: Row): boolean => {
     if (r.label === "Suggestions") return enabled
     if (r.label === "Auto approve") return autoApproveOn
+    if (r.rewards) return rewards
     if (r.arm) return autonomy[r.arm] !== "off"
     return !!r.on
   }
@@ -198,7 +221,11 @@ export default function ChannelActions() {
           </h3>
           {s.rows.map((r) => {
             const on = isOn(r)
-            const wired = r.label === "Suggestions" || r.label === "Auto approve" || !!r.arm
+            const wired =
+              r.label === "Suggestions" ||
+              r.label === "Auto approve" ||
+              !!r.arm ||
+              !!r.rewards
             return (
               <div
                 key={r.label}
@@ -224,6 +251,7 @@ export default function ChannelActions() {
                       onClick={
                         wired
                           ? () => {
+                              if (r.rewards) return toggleRewards()
                               if (r.arm) return toggleArm(r.arm)
                               if (r.label === "Auto approve") return toggleAutoApprove()
                               return toggleSuggestions()

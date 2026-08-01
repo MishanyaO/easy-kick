@@ -290,6 +290,7 @@ class Scenario:
             for arm in APPROVAL_ONLY_ARMS:
                 self._controller.autonomy[arm] = Autonomy.OFF
         self._controller.perform = self._fire
+        self._controller.announce = self._announce
         self._controller.compose = self._compose
         self._controller.evidence_origin = "scenario"
 
@@ -464,6 +465,12 @@ class Scenario:
         self.interventions += 1
         self._respond(state, arm, tuple(card.options))
         return True
+
+    def _announce(self, text: str) -> None:
+        """An award line, said in chat like any other bot message — but without `_respond`,
+        so the room has no scripted reaction to it. The story's arc is drawn from the seed
+        and a congratulation is not one of its beats."""
+        self._spoken.append(self._say(BOT_NAME, text))
 
     def _compose(self, arm: Arm) -> ControllerCard:
         """Copy that belongs to this moment, and that chat has not just heard."""

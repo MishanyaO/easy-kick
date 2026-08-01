@@ -98,6 +98,52 @@ export type ResultFrame = {
   // contract v2 asks for label / replies / held_s / raiders — not yet
 };
 
+/** One viewer's standing in the session's participation ledger. */
+export type Standing = {
+  user: string;
+  xp: number;
+  /** Windows they took part in — one per window at most, so this is not a message count. */
+  awards: number;
+  tier: string;
+  emoji: string;
+};
+
+/**
+ * A closed window paid out participation XP.
+ *
+ * Snapshot-shaped, exactly like `bandit`: `standings` is the whole board every time, never a
+ * delta. The frame history is bounded, so a tab that opens an hour in — or reconnects after
+ * the buffer has rolled over — would silently under-count a running sum of deltas, and a
+ * leaderboard that is quietly wrong is worse than one that is missing.
+ */
+export type AwardFrame = {
+  type: 'award';
+  ts: string;
+  action_id: string;
+  arm: Arm;
+  /** What each participant earned from this window. */
+  xp: number;
+  /** Everyone who took part, earliest first, each with the session total this award left
+   *  them on and the tier that total puts them in — so a per-intervention column needs no
+   *  lookup against `standings` and no second copy of the XP thresholds. */
+  awarded: { user: string; xp: number; tier: string; emoji: string }[];
+  promoted: { user: string; tier: string; emoji: string; xp: number }[];
+  standings: Standing[];
+  /** Everyone who has ever earned anything this session, not just the visible rows. */
+  chatters_ranked: number;
+};
+
+/**
+ * Our award lines are ordinary `gambit` chat messages — on live Kick we post through
+ * `chat:write` and the message returns via the webhook with no room for metadata of our own,
+ * so the leading emoji that makes the line readable in chat is also the only marker the
+ * dashboard has. Mirrors `AWARD_SIGIL`/`PROMOTION_SIGIL` in `awards.py`.
+ *
+ * Only ever trusted together with `username === BOT_NAME` (see `isAward`), so a viewer
+ * opening a message with the same emoji cannot forge one.
+ */
+export const AWARD_SIGILS = ['💰', '🎉'] as const;
+
 /** `chat_digest`: a card-only highlight, never posted to chat and never scored. */
 export type DigestFrame = {
   type: 'digest';
@@ -151,6 +197,7 @@ export type ControllerFrame = (
   | BanditFrame
   | PollFrame
   | DigestFrame
+  | AwardFrame
   | ControllerResetFrame
 ) & {
   /** Monotonic within one backend-owned gym/live session. */
@@ -161,6 +208,15 @@ export type ControllerFrame = (
 export type Frame =
   | ChatFrame
   | ControllerFrame;
+
+/** What one tactic pays a participant, mirroring `XP_PER_ARM` in `awards.py`. Arms absent
+ *  from this map award nothing — `prediction` happens inside Kick's own widget so we cannot
+ *  see who took part, `chat_digest` is never posted, and `nothing` is the control. */
+export const ARM_XP: Partial<Record<Arm, number>> = {
+  emote_rally: 5,
+  chat_poll: 10,
+  quiz: 15,
+};
 
 /** UI vocabulary derived from his numbers — the backend does not send these. */
 export type VerdictLabel = 'Worked' | 'Neutral' | 'Backfired' | "Can't tell";

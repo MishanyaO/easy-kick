@@ -65,8 +65,8 @@ export default function SessionInfo({
     ['Session', live ? 'LIVE' : 'OFFLINE'],
     ['Time Live', displayUptime != null ? elapsed(displayUptime) : '-'],
     // Static channel chrome — no followers/subs on the wire, same as Stream info's details.
-    ['Followers', '18.2K'],
-    ['Sub Count', '427'],
+    ['Followers', '1,284'],
+    ['Sub Count', '38'],
   ];
 
   return (

@@ -39,16 +39,24 @@ function buildGradient(): Uint8ClampedArray {
 export default function Heatmap({ points, className }: { points: Point[]; className?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gradientRef = useRef<Uint8ClampedArray | null>(null);
+  const pointsRef = useRef(points);
+  pointsRef.current = points;
+  const drawRef = useRef<() => void>(() => {});
 
+  // Mount once: build the gradient LUT, wire up the draw function (reading the
+  // latest points via a ref so it never goes stale), and observe resizes.
+  // Kept to `[]` deps so the ResizeObserver isn't torn down/recreated on every
+  // points update (~every 350ms).
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
     if (!gradientRef.current) gradientRef.current = buildGradient();
     const gradient = gradientRef.current;
 
     const draw = () => {
+      const points = pointsRef.current;
       const rect = canvas.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
       const w = Math.max(1, Math.round(rect.width * dpr));
@@ -90,10 +98,16 @@ export default function Heatmap({ points, className }: { points: Point[]; classN
       ctx.putImageData(img, 0, 0);
     };
 
+    drawRef.current = draw;
     draw();
     const ro = new ResizeObserver(draw);
     ro.observe(canvas);
     return () => ro.disconnect();
+  }, []);
+
+  // Repaint whenever points change, without touching the ResizeObserver.
+  useEffect(() => {
+    drawRef.current();
   }, [points]);
 
   return <canvas ref={canvasRef} className={className} />;

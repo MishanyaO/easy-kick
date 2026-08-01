@@ -52,7 +52,11 @@ export function useClickHeatmap(active: boolean): {
     );
 
   useEffect(() => {
-    if (!active) return;
+    if (!active) {
+      // Stream isn't live: clear the map so a restart never flashes stale points.
+      setPoints([]);
+      return;
+    }
 
     // New run: clear the old map and pick fresh hotspots.
     setPoints([]);

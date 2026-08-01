@@ -39,10 +39,11 @@ When a poll, quiz or emote rally closes, everyone who took part earns XP and the
 in chat — one line naming who joined in, and a second only when someone crosses a tier. It is
 encouragement aimed at the room, not at the streamer: the point is the viewers who did not
 answer this one. Predictions pay nothing, because they run inside Kick's own widget and we
-cannot see who backed which side. The standings live in the **Rewards** tab, and the whole
-thing has an off switch there. Awards are deliberately invisible to the measurement engine —
-see the note at the top of [awards.py](server/src/easy_kick/awards.py) for why, and for what
-that trade costs.
+cannot see who backed which side. The **Rewards** tab shows one column per intervention —
+who took part and what they are on — and Channel Actions has the switch that stops the
+payouts without stopping the bot. Awards are deliberately invisible to the measurement
+engine — see the note at the top of [awards.py](server/src/easy_kick/awards.py) for why, and
+for what that trade costs.
 
 ## Live mode — real Kick chat
 

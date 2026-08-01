@@ -136,49 +136,25 @@ function bestTactic(rows: Row[], state: ChatState) {
 }
 
 /**
- * The empty state, which is a designed surface rather than an apology.
- *
- * Two jobs, and the second is the one that earns the space: say what will appear here, and
- * explain the loop that will fill it. Second zero of a demo is spent on this screen, so
- * "nothing yet" is a wasted first impression — the shape of the thing is interesting even
- * before there is data in it.
+ * The empty state: what will appear here, once. It used to carry a three-step account of the
+ * watch/act/measure loop underneath, which is the product pitch printed on a screen a
+ * streamer sees for thirty seconds and never again — and every step of it is legible from
+ * the ledger the moment there is one row in it.
  */
 function Empty() {
   return (
     <div className="flex justify-center py-10">
-      <div className="w-full max-w-[560px] rounded-sm border border-dashed border-[var(--border)] bg-[var(--bg-elevated)] p-6 text-center">
+      <div className="w-full max-w-[440px] rounded-sm border border-dashed border-[var(--border)] bg-[var(--bg-elevated)] p-6 text-center">
         <div className="mx-auto flex size-11 items-center justify-center rounded-full bg-[var(--bg-surface)] text-[var(--kick-green)]">
           <Radar size={18} />
         </div>
-        <div className="mt-3 text-label font-bold tracking-[0.2em] text-[var(--text-muted)]">
-          NO CLOSED WINDOWS YET
-        </div>
-        <h3 className="mt-1 text-stat font-semibold text-[var(--text-primary)]">
-          The ledger fills itself
+        <h3 className="mt-3 text-stat font-semibold text-[var(--text-primary)]">
+          No closed windows yet
         </h3>
-        <p className="mx-auto mt-2 max-w-[440px] text-body leading-relaxed text-[var(--text-secondary)]">
+        <p className="mt-1.5 text-body leading-relaxed text-[var(--text-secondary)]">
           Every decision opens a 60-second window and lands here when it closes — including
-          the decisions to stay quiet, which are the control everything else is measured
-          against.
+          the decisions to stay quiet.
         </p>
-
-        <ol className="mt-5 space-y-2 text-left">
-          {([
-            ['Watch', 'participation is sampled continuously and classified lull / steady / spike'],
-            ['Act, or deliberately not', 'a tactic fires, or the “nothing” tactic wins — either way a window opens'],
-            ['Measure against a matched control', 'the lift is against comparable quiet windows, never just before-and-after'],
-          ] as [string, string][]).map(([step, why], i) => (
-            <li key={step} className="flex gap-3 rounded-sm bg-[var(--bg-surface)] px-3 py-2.5">
-              <span className="tnum mt-px shrink-0 text-body font-bold text-[var(--kick-green)]">
-                {i + 1}
-              </span>
-              <span className="min-w-0">
-                <span className="text-body font-medium text-[var(--text-primary)]">{step}</span>
-                <span className="block text-body leading-snug text-[var(--text-muted)]">{why}</span>
-              </span>
-            </li>
-          ))}
-        </ol>
       </div>
     </div>
   );
@@ -318,10 +294,12 @@ function Pivot({ results, at, onPick }: {
                   {st === 'all' ? (
                     // Not a gap in the data — a comparison this page refuses to make. A
                     // spike out-chats a lull whatever fired in it, so a "best overall" would
-                    // be naming the busiest state, dressed up as a tactic.
+                    // be naming the busiest state, dressed up as a tactic. The refusal is a
+                    // dash and a tooltip, not a sentence: it is the totals row of a table
+                    // whose other three rows carry the answer.
                     <span className="text-[var(--text-muted)]"
                       title="Tactics are ranked only within a state — across them you would be ranking the states.">
-                      ranked per state only
+                      —
                     </span>
                   ) : best ? (
                     <span className="text-[var(--text-secondary)]">
@@ -576,10 +554,13 @@ export default function Review({ s }: { s: GambitState }) {
               : totalLift < -NOISE_BAND ? 'less of the audience talking'
                 : 'no change in how much of the audience talks'}
           </div>
-          {/* The viewer count used to hang off the end of this line. It is a live number and
-              this sentence is about the whole session, and it is in the strip below anyway. */}
-          <div className="text-body text-[var(--text-muted)]">
-            {allFired.length} interventions · summed matched-control lift, in participation points
+          {/* The count, and not the methodology. "summed matched-control lift, in
+              participation points" defined the hero figure's unit in muted 14px directly
+              under a 32px number — the one place on the page where a reader is looking at
+              the number and not at prose about it. The LIFT column header still carries the
+              definition, on the table where a unit is actually being compared. */}
+          <div className="tnum text-body text-[var(--text-secondary)]">
+            {allFired.length} interventions
           </div>
         </div>
         <div className="ml-auto flex gap-0.5 rounded-sm border border-[var(--border)] p-0.5">
@@ -637,38 +618,34 @@ export default function Review({ s }: { s: GambitState }) {
             <Pivot results={s.results} at={{ state, section }} onPick={pick} />
           </div>
 
-          {/* What the ledger below is showing, and the way back out of it. When nothing is
-              filtered the same line is where the two tables' controls are explained, which
-              is the one place a reader is looking when they need that. */}
-          <div className="mt-2.5 flex items-baseline gap-3 text-body">
-            <span className="min-w-0 truncate text-[var(--text-muted)]">
-              {filtered ? (
-                <>
-                  Showing{' '}
-                  <span className="text-[var(--text-primary)]">
-                    {state === 'all' ? 'every state' : STATE_LABEL[state]}
-                  </span>
-                  {' · '}
-                  <span className="text-[var(--text-primary)]">
-                    {section === 'all' ? 'every outcome' : SECTION_LONG[section]}
-                  </span>
-                  {' — '}
-                  <span className="tnum">{rows.length}</span>{' '}
-                  {rows.length === 1 ? 'window' : 'windows'}
-                </>
-              ) : (
-                'Every closed window, newest first. Click a count above to narrow it, a heading below to sort it, a row to open it.'
-              )}
-            </span>
-            {filtered && (
+          {/* What the ledger below is showing, and the way back out of it — and nothing at
+              all when nothing is filtered. The unfiltered line used to spell out how to work
+              the two tables: click a count, click a heading, click a row. Three instructions
+              for three affordances that are already a cursor change and a hover away, printed
+              permanently above the thing they describe. */}
+          {filtered && (
+            <div className="mt-2.5 flex items-baseline gap-3 text-body">
+              <span className="min-w-0 truncate text-[var(--text-muted)]">
+                Showing{' '}
+                <span className="text-[var(--text-primary)]">
+                  {state === 'all' ? 'every state' : STATE_LABEL[state]}
+                </span>
+                {' · '}
+                <span className="text-[var(--text-primary)]">
+                  {section === 'all' ? 'every outcome' : SECTION_LONG[section]}
+                </span>
+                {' — '}
+                <span className="tnum">{rows.length}</span>{' '}
+                {rows.length === 1 ? 'window' : 'windows'}
+              </span>
               <button onClick={clear}
                 className="ml-auto shrink-0 text-[var(--kick-green)] hover:underline">
                 show everything
               </button>
-            )}
-          </div>
+            </div>
+          )}
 
-          <div className="mt-1.5 rounded-sm border border-[var(--border)] bg-[var(--bg-base)]">
+          <div className="mt-2.5 rounded-sm border border-[var(--border)] bg-[var(--bg-base)]">
             <table className="w-full table-fixed border-separate border-spacing-0">
               {/* Pinned to the page's scroller, cell by cell — see `STICKY`. A header that
                   lets three hundred rows slide under it is a header nobody can read past the

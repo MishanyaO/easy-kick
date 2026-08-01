@@ -19,10 +19,11 @@
 // per state instead: a state is an experiment, the card is its result and its workings, and
 // nothing on the page suggests reading between them.
 import { useState } from 'react';
-import { FlaskConical } from 'lucide-react';
+import { ChevronDown, FlaskConical } from 'lucide-react';
 import type { GambitState } from '../useGambit';
 import {
-  ARM_BLURB, ARM_LABEL, MIN_PULLS, STATE_LABEL, STATE_PHRASE, SURE, cellKey, pBeats, points,
+  ARM_BLURB, ARM_LABEL, MIN_PULLS, STATE_LABEL, STATE_PHRASE, SURE, betaLogPdf, betaSd,
+  cellKey, pBeats, points,
   type Arm, type Belief, type ChatState, type LastDecision, type Posterior,
 } from '../types';
 
@@ -88,15 +89,105 @@ function reading(p: Posterior, now: number, state: ChatState, arm: Arm): string 
   return `${ARM_LABEL[arm]} — ${asPct(now)} sure it beats staying quiet, over ${p.pulls} tries. ${ARM_BLURB[arm]}.`;
 }
 
+/** The density panel's coordinate space — a resolution, not a size, same as a track's. */
+const DW = 200;
+const DH = 64;
+const DSAMPLES = 96;
+
+const beliefMean = (b: Belief) => b.alpha / (b.alpha + b.beta);
+const beliefSd = (b: Belief) => betaSd(b.alpha, b.beta);
+
+/** Beta(α, β) sampled across [lo, hi]. */
+const density = (b: Belief, lo: number, hi: number): number[] =>
+  Array.from({ length: DSAMPLES }, (_, i) => {
+    const x = clamp01(lo + ((hi - lo) * i) / (DSAMPLES - 1));
+    return Math.exp(betaLogPdf(Math.min(1 - 1e-9, Math.max(1e-9, x)), b.alpha, b.beta));
+  });
+
+/**
+ * The two beliefs themselves, drawn.
+ *
+ * The line above this is a derived number; this is the thing the number is derived *from* —
+ * the tactic's posterior and silence's posterior on one axis. Two curves sliding apart and
+ * sharpening is what learning actually looks like, and it makes the sampler legible in a way
+ * no summary does: the width is exactly how wild a Thompson draw out of this cell can roll.
+ *
+ * The axis carries no numbers on purpose. These are posteriors over the *reward* — a
+ * logistic squash of relative lift with the interruption cost already subtracted — so the
+ * units answer no question a human has, and printing them would invite reading a scale that
+ * means nothing. Left/right and sharp/wide are the entire claim.
+ *
+ * Two curves, and that is now the whole panel. It used to carry three earlier snapshots of
+ * the pair drawn faintly behind, plus a shaded region where the two still overlapped — eight
+ * more paths in a box 64px tall, and both needed a written key to mean anything. When that
+ * key came off as noise it took the marks with it: an unlabelled ghost is texture, and a
+ * shaded crossing that is *not* P(this beats that) is a second quantity in a panel that
+ * exists to show one. What is left is the comparison the row above states in words.
+ */
+function Density({ mine, ctrl, tint }: {
+  mine: Belief;
+  ctrl: Belief;
+  tint: string;
+}) {
+  const shown = [mine, ctrl];
+  // Wide enough to hold both curves whole, so neither is clipped into looking like it ran off
+  // somewhere. A flat Beta(1, 1) opens this to the full [0, 1] on its own.
+  const lo = Math.max(0, Math.min(...shown.map((b) => beliefMean(b) - 3.5 * beliefSd(b))));
+  const hi = Math.min(1, Math.max(...shown.map((b) => beliefMean(b) + 3.5 * beliefSd(b))));
+
+  const fMine = density(mine, lo, hi);
+  const fCtrl = density(ctrl, lo, hi);
+
+  // One vertical scale across both: heights are comparable, so a sharpening curve visibly
+  // grows and a vague one stays a smear. Rescaling per curve would flatten the single most
+  // informative difference on the panel. The headroom is so a posterior that peaks against
+  // x=0 or x=1 — Beta(α, 1) after an unbroken run of wins does exactly that — reads as a
+  // curve leaning on the wall rather than as a chart with its top sliced off.
+  const peak = Math.max(...fMine, ...fCtrl, 1e-9) * 1.1;
+  const x = (i: number) => (i / (DSAMPLES - 1)) * DW;
+  const y = (v: number) => DH - (v / peak) * DH;
+  const path = (c: number[]) =>
+    c.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
+  const tick = (b: Belief) => ((beliefMean(b) - lo) / (hi - lo || 1)) * DW;
+
+  return (
+    <svg viewBox={`0 0 ${DW} ${DH}`} preserveAspectRatio="none"
+      className="w-full" style={{ display: 'block', height: DH }}>
+      <path d={`${path(fCtrl)}L${DW},${DH}L0,${DH}Z`} fill="var(--text-secondary)" opacity={0.1} />
+      <path d={path(fCtrl)} fill="none" stroke="var(--text-secondary)" strokeWidth="1.5"
+        strokeDasharray="3,2" vectorEffect="non-scaling-stroke" />
+
+      <path d={`${path(fMine)}L${DW},${DH}L0,${DH}Z`} fill={tint} opacity={0.14} />
+      <path d={path(fMine)} fill="none" stroke={tint} strokeWidth="1.5"
+        vectorEffect="non-scaling-stroke" />
+
+      {/* where each belief currently sits, so "further right" has something to land on */}
+      <line x1={tick(ctrl)} x2={tick(ctrl)} y1={DH - 6} y2={DH} stroke="var(--text-secondary)"
+        strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+      <line x1={tick(mine)} x2={tick(mine)} y1={DH - 6} y2={DH} stroke={tint}
+        strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
 /** One tactic's line inside a state card: how sure, and how much it has to go on. */
-function Track({ state, arm, p, series }: {
+function Track({ state, arm, p, ctrlNow, series }: {
   state: ChatState;
   arm: Arm;
   p: Posterior;
+  /** silence's belief right now — the thing this row is drawn against */
+  ctrlNow: Belief;
   series: number[];
 }) {
+  const [open, setOpen] = useState(false);
   const now = series[series.length - 1];
   const cold = p.pulls < MIN_PULLS;
+  /** Never fired here. The row prints "—" rather than a percentage for these, and a line is
+   *  a picture of the number the row is declining to print. It does move — silence keeps
+   *  learning underneath an untried cell, so the trace drifts down — but that motion belongs
+   *  to the control, not to this tactic, and four of these in a column is a card that looks
+   *  like it has data when what it has is the same fact four times. */
+  const untried = p.pulls === 0;
   // Grey, not green or red: under MIN_PULLS the sampler ignores this cell, so colouring it
   // by direction would be the chart calling a race the policy is not running. Secondary
   // rather than muted, though — early in a session every cell is cold, and a grid of lines
@@ -106,27 +197,68 @@ function Track({ state, arm, p, series }: {
   const y = (v: number) => CH - clamp01(v) * CH;
   const d = series.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
 
+  // The row's own grey is right for a cold *line*, but inside the density panel it is the
+  // control's colour too, and two grey curves on one axis is a picture of nothing. The
+  // panel needs the pair separable before it needs to stay uncommitted about the verdict,
+  // so a cold arm goes white and the direction is still carried by the row above.
+  const curveTint = cold ? 'var(--text-primary)' : tint;
+
   return (
-    <div className="flex items-center gap-2" title={reading(p, now, state, arm)}
-      style={{ opacity: p.pulls === 0 ? 0.6 : 1 }}>
-      <span className="w-[88px] shrink-0 truncate text-body text-[var(--text-primary)]">
-        {ARM_LABEL[arm]}
-      </span>
-      <svg viewBox={`0 0 ${CW} ${CH}`} preserveAspectRatio="none"
-        className="min-w-0 flex-1" style={{ display: 'block', height: CH }}>
-        {/* the coin flip — where every belief starts and where "no idea" stays */}
-        <line x1={0} x2={CW} y1={y(0.5)} y2={y(0.5)} stroke="var(--text-muted)" strokeWidth="1"
-          strokeDasharray="2,2" opacity={0.8} vectorEffect="non-scaling-stroke" />
-        {/* the area between the trace and the coin flip: which side, and by how much */}
-        <path d={`${d}L${CW},${y(0.5)}L0,${y(0.5)}Z`} fill={tint} opacity={0.18} />
-        <path d={d} fill="none" stroke={tint} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-      </svg>
-      <span className="tnum w-9 shrink-0 text-right text-body font-bold" style={{ color: tint }}>
-        {p.pulls === 0 ? '—' : asPct(now)}
-      </span>
-      <span className="tnum w-7 shrink-0 text-right text-label text-[var(--text-muted)]">
-        {p.pulls === 0 ? 'new' : `×${p.pulls}`}
-      </span>
+    <div>
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
+        title={reading(p, now, state, arm)}
+        className="group flex w-full items-center gap-2 text-left"
+        style={{ opacity: untried ? 0.6 : 1 }}>
+        <span className="w-[88px] shrink-0 truncate text-body text-[var(--text-primary)]">
+          {ARM_LABEL[arm]}
+        </span>
+        {/* The untried row keeps the column, not the drawing, so the three cards still line up
+            row for row — a card whose rows are 20px shorter than its neighbour's is a worse
+            trade than the empty space. */}
+        {untried ? <span className="min-w-0 flex-1" /> : (
+          <svg viewBox={`0 0 ${CW} ${CH}`} preserveAspectRatio="none"
+            className="min-w-0 flex-1" style={{ display: 'block', height: CH }}>
+            {/* the coin flip — where every belief starts and where "no idea" stays */}
+            <line x1={0} x2={CW} y1={y(0.5)} y2={y(0.5)} stroke="var(--text-muted)" strokeWidth="1"
+              strokeDasharray="2,2" opacity={0.8} vectorEffect="non-scaling-stroke" />
+            {/* the area between the trace and the coin flip: which side, and by how much */}
+            <path d={`${d}L${CW},${y(0.5)}L0,${y(0.5)}Z`} fill={tint} opacity={0.18} />
+            <path d={d} fill="none" stroke={tint} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+          </svg>
+        )}
+        <span className="tnum w-9 shrink-0 text-right text-body font-bold" style={{ color: tint }}>
+          {untried ? '—' : asPct(now)}
+        </span>
+        {/* Secondary, not muted, and at body size with the rest of the row. It is the second
+            half of the readout — a percentage means one thing off twelve windows and another
+            off one — so printing it a size down in the faintest grey on the palette hid the
+            caveat and kept the claim. */}
+        <span className="tnum w-8 shrink-0 text-right text-body text-[var(--text-secondary)]">
+          {untried ? 'new' : `×${p.pulls}`}
+        </span>
+        {/* Twelve identical glyphs at rest were a column of chrome down the middle of the
+            screen, so it shows on hover and stays out while open. Rotated rather than swapped
+            for a second glyph, so the row never reflows. */}
+        <ChevronDown size={12}
+          className={`shrink-0 text-[var(--text-muted)] transition-opacity group-hover:opacity-100 ${
+            open ? 'opacity-100' : 'opacity-0'
+          }`}
+          style={{ transform: open ? 'rotate(180deg)' : 'none' }} />
+      </button>
+
+      {open && (
+        <div className="mb-1 mt-1.5 rounded-sm bg-[var(--bg-elevated)] px-2 pb-1.5 pt-2">
+          <Density mine={p} ctrl={ctrlNow} tint={curveTint} />
+          {/* A legend and nothing else. The gloss that used to sit under this panel — which
+              direction is better, what the width means, what the grey is — was three lines of
+              12px muted text under a 64px chart, and it read as the picture's footnotes
+              rather than as its key. Two names against two curves is the whole legend. */}
+          <div className="mt-1 flex items-baseline gap-x-2 text-body">
+            <span style={{ color: curveTint }}>{ARM_LABEL[arm]}</span>
+            <span className="text-[var(--text-secondary)]">vs staying quiet</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -137,7 +269,7 @@ function Track({ state, arm, p, series }: {
 type Call =
   | { kind: 'arm'; arm: Arm; p: number; lift: { mean: number; n: number } | null }
   | { kind: 'quiet'; p: number }
-  | { kind: 'unknown'; tried: number; of: number };
+  | { kind: 'unknown'; tried: number };
 
 /**
  * One chat state: the call, then the workings behind it.
@@ -158,20 +290,17 @@ function StateCard({ state, call, windows, children }: {
   const headline = call.kind === 'arm' ? ARM_LABEL[call.arm]
     : call.kind === 'quiet' ? 'Stay quiet' : 'Still finding out';
 
+  // One line under the headline, not two. The card used to carry a confidence line and a
+  // separate grey "workings" line beneath it — how many tactics had been tried, how many
+  // windows each still needed, that the measurement was not clean yet. All of it true, none
+  // of it readable at 12px in muted grey, and the rows directly below print the same counts.
+  // What survives is the number the call was made on, plus the measured lift when there is
+  // one, because that is the only figure on the card the rows do not already show.
   const sub = call.kind === 'arm'
-    ? `${asPct(call.p)} sure it beats staying quiet`
+    ? `${asPct(call.p)} sure it beats staying quiet${call.lift ? ` · ${points(call.lift.mean)} avg` : ''}`
     : call.kind === 'quiet'
       ? `${asPct(call.p)} sure silence is the better move here`
-      : call.tried === 0 ? 'nothing tried here yet' : 'nothing has separated from the coin flip';
-
-  const meta = call.kind === 'arm'
-    ? (call.lift
-      ? `${points(call.lift.mean)} on average over ${call.lift.n}`
-      : 'no clean measurement yet')
-    : call.kind === 'quiet' ? 'every tactic tried here has come out behind'
-      // What it is waiting for, not just that it is waiting. "2 tried so far" leaves a
-      // reader to guess whether the thing is stuck.
-      : `${call.tried}/${call.of} tactics tried · ${MIN_PULLS} windows each to call it`;
+      : call.tried === 0 ? 'nothing tried here yet' : 'no clear winner yet';
 
   return (
     <section className="flex min-w-[248px] flex-1 flex-col rounded-sm border bg-[var(--bg-surface)]"
@@ -180,7 +309,7 @@ function StateCard({ state, call, windows, children }: {
         <span className="text-body font-bold tracking-[0.18em] text-[var(--text-secondary)]">
           {STATE_LABEL[state]}
         </span>
-        <span className="tnum shrink-0 text-label text-[var(--text-muted)]">
+        <span className="tnum shrink-0 text-body text-[var(--text-secondary)]">
           {windows} windows
         </span>
       </header>
@@ -190,11 +319,10 @@ function StateCard({ state, call, windows, children }: {
           style={{ color: call.kind === 'unknown' ? 'var(--text-secondary)' : 'var(--text-primary)' }}>
           {headline}
         </div>
-        <div className="text-body leading-snug"
+        <div className="tnum text-body leading-snug"
           style={{ color: call.kind === 'arm' ? 'var(--kick-green)' : 'var(--text-secondary)' }}>
           {sub}
         </div>
-        <div className="tnum truncate text-body text-[var(--text-muted)]">{meta}</div>
       </div>
 
       <div className="space-y-1.5 border-t border-[var(--border)] px-3 py-2.5">{children}</div>
@@ -220,12 +348,17 @@ function LastCall({ d }: { d: LastDecision }) {
 
   return (
     <section className="rounded-sm border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+      {/* The heading carries the mechanism, so the line under it can be the one fact the
+          bars do not show: which chat state this roll was made in. "One roll per belief,
+          highest plays" is what the bars are a picture of — a reader who has them in front
+          of them does not need it written out underneath as well. */}
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-        <span className="shrink-0 text-label font-bold tracking-[0.2em] text-[var(--text-muted)]">
+        <span className="shrink-0 text-body font-bold tracking-[0.18em] text-[var(--text-secondary)]">
           WHY IT PICKED THAT
         </span>
-        <span className="text-body text-[var(--text-secondary)]">
-          {STATE_PHRASE[d.state]}, so it rolled one number out of each belief. Highest plays.
+        <span className="text-body text-[var(--text-secondary)]"
+          title="One number is rolled out of each belief and the highest plays — a wide belief rolls wild, which is the exploring.">
+          {STATE_PHRASE[d.state]}
         </span>
       </div>
 
@@ -263,64 +396,43 @@ function LastCall({ d }: { d: LastDecision }) {
         })}
       </div>
 
-      <p className="mt-2 text-body leading-snug text-[var(--text-muted)]">
-        {d.forced_control
-          ? 'This window was held back on purpose — a share of every session is reserved as quiet windows, or there is nothing to measure the loud ones against.'
-          : 'A belief that is still wide throws wild numbers and gets its turn anyway. That is the exploring.'}
-      </p>
+      {/* Only when the bars do not explain themselves. A forced control is the one case where
+          the top roll did not play, and a reader who is not told why is looking at a bug. The
+          other branch used to restate the sentence in the header, in grey, every window. */}
+      {d.forced_control && (
+        <p className="mt-2 text-body leading-snug text-[var(--text-secondary)]">
+          Held back on purpose — a reserved quiet window to measure the loud ones against.
+        </p>
+      )}
     </section>
   );
 }
 
-/** The empty state, which is a designed surface rather than an apology — the first seconds
- *  of a demo are spent on it, and the shape of the experiment is interesting before there
- *  is anything in it. */
+/** The empty state: what this surface will hold, once. The three-step account of the
+ *  experiment that used to sit under it — one question per cell, silence as the thing to
+ *  beat, every answer starting at a coin flip — is all three legible off the cards the
+ *  moment there are cards, and every row on them says "sure it beats staying quiet" in
+ *  words. */
 function Empty({ cells }: { cells: number }) {
   return (
     <div className="flex justify-center py-10">
-      <div className="w-full max-w-[560px] rounded-sm border border-dashed border-[var(--border)] bg-[var(--bg-elevated)] p-6 text-center">
+      <div className="w-full max-w-[440px] rounded-sm border border-dashed border-[var(--border)] bg-[var(--bg-elevated)] p-6 text-center">
         <div className="mx-auto flex size-11 items-center justify-center rounded-full bg-[var(--bg-surface)] text-[var(--kick-green)]">
           <FlaskConical size={18} />
         </div>
-        <div className="mt-3 text-label font-bold tracking-[0.2em] text-[var(--text-muted)]">
-          NOTHING LEARNED YET
-        </div>
-        <h3 className="mt-1 text-stat font-semibold text-[var(--text-primary)]">
+        <h3 className="mt-3 text-stat font-semibold text-[var(--text-primary)]">
           Three kinds of chat, {cells} questions
         </h3>
-        <p className="mx-auto mt-2 max-w-[440px] text-body leading-relaxed text-[var(--text-secondary)]">
-          Every chat state runs its own experiment, and tactics are only ever compared within
-          one — a spike out-chats a lull no matter what fired in it, so ranking across states
-          would be measuring the state.
+        <p className="mt-1.5 text-body leading-relaxed text-[var(--text-secondary)]">
+          Each one asks whether a tactic beats staying quiet in that kind of chat. Every
+          answer starts at a coin flip.
         </p>
-        <ol className="mt-5 space-y-2 text-left">
-          {([
-            ['Each cell asks one question',
-              'does this tactic beat staying quiet, in this kind of chat — and the answer is a probability, not a score'],
-            ['Staying quiet is the thing to beat',
-              'it holds its own belief and every interruption is charged a cost, so silence has to be beaten on evidence'],
-            ['Every answer starts at a coin flip',
-              'start the simulator and watch them separate in minutes instead of over a season'],
-          ] as [string, string][]).map(([step, why], i) => (
-            <li key={step} className="flex gap-3 rounded-sm bg-[var(--bg-surface)] px-3 py-2.5">
-              <span className="tnum mt-px shrink-0 text-body font-bold text-[var(--kick-green)]">
-                {i + 1}
-              </span>
-              <span className="min-w-0">
-                <span className="text-body font-medium text-[var(--text-primary)]">{step}</span>
-                <span className="block text-body leading-snug text-[var(--text-muted)]">{why}</span>
-              </span>
-            </li>
-          ))}
-        </ol>
       </div>
     </div>
   );
 }
 
 export default function PolicyMap({ s }: { s: GambitState }) {
-  const [why, setWhy] = useState(false);
-
   const posteriors = s.bandit?.posteriors ?? [];
   const at = (state: ChatState, arm: Arm) =>
     posteriors.find((p) => p.state === state && p.arm === arm);
@@ -345,56 +457,38 @@ export default function PolicyMap({ s }: { s: GambitState }) {
   const callFor = (state: ChatState): Call => {
     const ctrl = at(state, 'nothing');
     const tried = arms.filter((a) => (at(state, a)?.pulls ?? 0) > 0).length;
-    if (!ctrl) return { kind: 'unknown', tried, of: arms.length };
+    if (!ctrl) return { kind: 'unknown', tried };
     const ranked = arms
       .map((arm) => ({ arm, p: pBeats(at(state, arm)!, ctrl), pulls: at(state, arm)!.pulls }))
       .filter((c) => c.pulls >= MIN_PULLS)
       .sort((a, b) => b.p - a.p);
-    if (!ranked.length) return { kind: 'unknown', tried, of: arms.length };
+    if (!ranked.length) return { kind: 'unknown', tried };
     const top = ranked[0];
     if (top.p >= SURE) {
       return { kind: 'arm', arm: top.arm, p: top.p, lift: measured(s.results, state, top.arm) };
     }
     // Even the best tactic here is behind silence by a margin we would call the other way.
     if (top.p <= 1 - SURE) return { kind: 'quiet', p: 1 - top.p };
-    return { kind: 'unknown', tried, of: arms.length };
+    return { kind: 'unknown', tried };
   };
-
-  const cells = STATES.length * arms.length;
-  const tried = STATES.flatMap((st) => arms.map((a) => at(st, a)))
-    .filter((p) => p && p.pulls > 0).length;
 
   return (
     // No scroller of its own: the page it sits on is one scrolling document now, and a panel
     // that scrolls inside a page that scrolls is two wheels for one list.
     <div className="@container space-y-3">
+      {/* A heading and one number. This line used to carry the arithmetic behind the cell
+          count, how many cells were still unasked, and a disclosure about which tactics
+          qualify — and the cell count was the worst of them, because twelve cells are twelve
+          rows directly underneath: it described the screen to someone already looking at it.
+          The decision count is the one figure here that is nowhere else. */}
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="text-label font-bold tracking-[0.2em] text-[var(--text-muted)]">
+        <span className="text-body font-bold tracking-[0.18em] text-[var(--text-secondary)]">
           WHAT GAMBIT KNOWS
         </span>
-        <span className="text-body text-[var(--text-secondary)]">
-          {arms.length} tactics × {STATES.length} kinds of chat ={' '}
-          <span className="tnum text-[var(--text-primary)]">{cells} questions</span>
-          {cells - tried > 0 ? `, ${cells - tried} still unasked` : ', all asked'} ·{' '}
-          <span className="tnum">{s.bandit?.decisions ?? 0}</span> decisions
+        <span className="tnum text-body text-[var(--text-secondary)]">
+          <span className="text-[var(--text-primary)]">{s.bandit?.decisions ?? 0}</span> decisions
         </span>
-        <button onClick={() => setWhy((v) => !v)}
-          className="ml-auto shrink-0 text-body text-[var(--text-muted)] hover:text-[var(--text-secondary)]">
-          {why ? 'hide' : 'why only these tactics?'}
-        </button>
       </div>
-
-      {/* The question every judge asks within ten seconds of seeing the policy grid, answered in one
-          line and folded away again. */}
-      {why && (
-        <p className="rounded-sm border border-[var(--border)] bg-[var(--bg-surface)] px-3 py-2 text-body leading-relaxed text-[var(--text-secondary)]">
-          Gambit experiments with these four tactics. Prediction is part of the policy, but
-          it always stops for streamer approval because it stakes viewers&rsquo; own points.
-          Chat digest is written only for the streamer, never posted or scored, so it stays
-          outside the bandit. Staying quiet is the control arm and the 50% line each tactic
-          is drawn against rather than a row of its own.
-        </p>
-      )}
 
       {/* One card per state, and deliberately no way to read across them: comparing a tactic
           between a lull and a spike compares the lull and the spike. */}
@@ -404,20 +498,19 @@ export default function PolicyMap({ s }: { s: GambitState }) {
             windows={posteriors.filter((p) => p.state === st).reduce((n, p) => n + p.pulls, 0)}>
             {arms.map((arm) => {
               const p = at(st, arm);
-              return p && <Track key={arm} state={st} arm={arm} p={p} series={seriesFor(st, arm)} />;
+              const ctrlNow = at(st, 'nothing');
+              return p && ctrlNow && (
+                <Track key={arm} state={st} arm={arm} p={p} ctrlNow={ctrlNow}
+                  series={seriesFor(st, arm)} />
+              );
             })}
           </StateCard>
         ))}
       </div>
 
-      <p className="text-body leading-snug text-[var(--text-muted)]">
-        Each line is <span className="text-[var(--text-primary)]">how sure</span> Gambit is
-        that the tactic beats staying quiet; the dashes are 50%, a coin flip. This table —{' '}
-        {posteriors.length} beliefs, no chat log, nothing tied to tonight — is the whole of
-        what it knows, which is what makes it the thing that carries into the next stream
-        instead of starting cold.
-      </p>
-
+      {/* The footnote that used to sit here explained the axis in four lines of grey text.
+          The cards already print the axis in words on every row — "89% sure it beats staying
+          quiet" — so it was a caption for a chart that captions itself. */}
       {s.bandit?.last_decision && <LastCall d={s.bandit.last_decision} />}
     </div>
   );

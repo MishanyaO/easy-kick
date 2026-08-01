@@ -2,11 +2,14 @@ import { useEffect, useRef } from 'react';
 import { FADE_MS, type Point } from './useClickHeatmap';
 
 /** Radius of a single click's influence, in CSS pixels. */
-const BLOB_RADIUS = 28;
+const BLOB_RADIUS = 34;
 /** Per-blob peak opacity in the alpha pass; overlapping blobs sum toward full.
  *  Kept high so even scattered single clicks are visible and dense clusters run
  *  hot (red) quickly. */
-const BLOB_ALPHA = 0.4;
+const BLOB_ALPHA = 0.6;
+/** Ceiling on the colorized overlay's per-pixel opacity (0–255). High enough to
+ *  read clearly over the video while still letting it show through. */
+const MAX_OVERLAY_ALPHA = 235;
 
 /** 256-entry blue→cyan→green→yellow→red lookup, indexed by accumulated alpha.
  *  Built once from a canvas gradient. Returns a flat RGBA array (length 1024). */
@@ -105,7 +108,7 @@ export default function Heatmap({ points, className }: { points: Point[]; classN
         d[i + 1] = gradient[off + 1];
         d[i + 2] = gradient[off + 2];
         // Cap overlay opacity so the video stays visible underneath.
-        d[i + 3] = Math.min(200, a);
+        d[i + 3] = Math.min(MAX_OVERLAY_ALPHA, a);
       }
       ctx.putImageData(img, 0, 0);
     };

@@ -64,20 +64,21 @@ export default function Heatmap({
   const pointsRef = useRef(points);
   pointsRef.current = points;
 
-  // The map ages against its own clock, which stops while `frozen` and carries on from
-  // where it stopped afterwards — so a held run keeps its picture for as long as the
-  // streamer wants it, and unfreezing fades that picture out over the usual life of a tap
-  // instead of blinking it away because wall time moved on without it.
-  const frozenAtRef = useRef<number | null>(null);
-  const heldMsRef = useRef(0);
-  if (frozen && frozenAtRef.current === null) {
-    frozenAtRef.current = Date.now();
-  } else if (!frozen && frozenAtRef.current !== null) {
-    heldMsRef.current += Date.now() - frozenAtRef.current;
-    frozenAtRef.current = null;
+  // A hold stops the taps on screen from ageing, so a held run keeps its picture for as
+  // long as the streamer wants it and unfreezing fades that picture out over the usual life
+  // of a tap instead of blinking it away because wall time moved on without it.
+  //
+  // Charged per tap, not as one offset on a shared clock: a shared clock stays behind wall
+  // time forever after a hold, so every tap that arrives *later* inherits the whole pause
+  // and outlives it by that much — which is why the second rally onwards never faded. Only
+  // the part of a hold that falls after a tap was born can pause that tap.
+  const holdsRef = useRef<{ start: number; end: number | null }[]>([]);
+  const openHold = holdsRef.current[holdsRef.current.length - 1];
+  if (frozen && (openHold === undefined || openHold.end !== null)) {
+    holdsRef.current.push({ start: Date.now(), end: null });
+  } else if (!frozen && openHold !== undefined && openHold.end === null) {
+    openHold.end = Date.now();
   }
-  const clockRef = useRef<() => number>(() => 0);
-  clockRef.current = () => (frozenAtRef.current ?? Date.now()) - heldMsRef.current;
 
   // Mount once: build the gradient LUT, wire up the draw function (reading the
   // latest points via a ref so it never goes stale), and observe resizes.
@@ -105,13 +106,25 @@ export default function Heatmap({
 
       // Pass 1: alpha blobs, each dimmed by how much life it has left so it
       // fades out over CLICK_FADE_MS.
-      const now = clockRef.current();
+      const now = Date.now();
+      // Spans that ended before the oldest tap on screen can no longer pause anything, so
+      // the list stays as short as the run has holds still in play — usually none.
+      let oldest = now;
+      for (const p of points) if (p.born < oldest) oldest = p.born;
+      holdsRef.current = holdsRef.current.filter((h) => h.end === null || h.end > oldest);
+      const holds = holdsRef.current;
+
       ctx.globalCompositeOperation = 'source-over';
       const r = BLOB_RADIUS * dpr;
       for (const p of points) {
-        // Capped at 1: taps that arrive after a hold are stamped in wall time, which the
-        // map's clock is behind by however long it was frozen.
-        const life = Math.min(1, 1 - (now - p.born) / CLICK_FADE_MS);
+        // Only the slice of each hold that this tap lived through: a tap born during or
+        // after a hold is not owed the part of it that happened before the tap existed.
+        let paused = 0;
+        for (const h of holds) {
+          const end = h.end ?? now;
+          if (end > p.born) paused += end - Math.max(h.start, p.born);
+        }
+        const life = 1 - (now - p.born - paused) / CLICK_FADE_MS;
         if (life <= 0) continue;
         const x = p.x * w;
         const y = p.y * h;
